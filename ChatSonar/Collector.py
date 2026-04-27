@@ -11,6 +11,9 @@ except ImportError:
     HAS_EMOJI_LIB = False
 
 
+SCHEMA_VERSION = 2
+
+
 class Collector:
     def __init__(self, sdk, config):
         self.sdk = sdk
@@ -20,7 +23,7 @@ class Collector:
         self._last_active = {}
 
     async def start(self):
-        pass
+        self._migrate_if_needed()
 
     async def stop(self):
         pass
@@ -38,20 +41,30 @@ class Collector:
         if detail_type not in ("group", "private"):
             return
 
-        group_id = event.get_group_id() if detail_type == "group" else f"dm_{event.get_user_id()}"
-        if not group_id:
-            return
+        is_group = detail_type == "group"
+        is_command = False
+        if hasattr(event, 'is_command') and callable(event.is_command):
+            try:
+                is_command = event.is_command()
+            except Exception:
+                text = event.get_text() or ""
+                is_command = text.startswith("/")
 
-        scope = self._scope(platform, group_id)
         user_id = event.get_user_id()
         if not user_id:
             return
 
-        if self._is_optout(scope, user_id):
-            return
+        group_id = None
+        scope = None
+        if is_group:
+            group_id = event.get_group_id()
+            if not group_id:
+                return
+            scope = self._scope(platform, group_id)
+            if self._is_optout(scope, user_id):
+                return
 
         text = event.get_text() or ""
-        msg_len = len(text)
         event_time = event.get_time()
         if event_time and event_time > 0:
             if event_time > 1e12:
@@ -60,41 +73,45 @@ class Collector:
             hour = int((event_time / 3600 + utc_offset) % 24)
         else:
             hour = datetime.now().hour
+
+        nickname = event.get_user_nickname() or ""
+        timestamp = time.time()
+
+        if is_command:
+            if scope:
+                self._persist_presence(scope, user_id)
+                self._persist_group_user(scope, user_id, nickname, timestamp)
+            return
+
         emojis = self._extract_emojis(text)
         words = self._extract_words(text)
+        msg_len = len(text)
         mentions = event.get_mentions() or []
-        timestamp = time.time()
-        nickname = event.get_user_nickname() or ""
 
-        record = {
-            "scope": scope,
-            "user_id": user_id,
-            "nickname": nickname,
-            "hour": hour,
-            "msg_len": msg_len,
-            "emojis": emojis,
-            "words": words,
-            "mentions": mentions,
-            "timestamp": timestamp,
-        }
+        self._persist_profile(user_id, hour, msg_len, emojis, words, nickname, timestamp)
 
-        try:
-            self._persist(record)
-        except Exception as e:
-            self.logger.error(f"Persist error: {e}")
+        if is_group and scope:
+            self._persist_presence(scope, user_id)
+            self._persist_group_user(scope, user_id, nickname, timestamp)
+            self._persist_groups_list(user_id, scope)
 
-        self._last_active.setdefault(scope, {})
-        self._last_active[scope][user_id] = time.time()
-        if len(self._last_active.get(scope, {})) >= 2:
-            try:
-                self._update_cooccurrence(scope)
-            except Exception as e:
-                self.logger.error(f"Cooccurrence error: {e}")
+            if mentions:
+                self._persist_interact(scope, user_id, mentions)
+
+            self._last_active.setdefault(scope, {})
+            self._last_active[scope][user_id] = time.time()
+            if len(self._last_active.get(scope, {})) >= 2:
+                try:
+                    self._update_cooccurrence(scope)
+                except Exception as e:
+                    self.logger.error(f"Cooccurrence error: {e}")
 
     def _extract_emojis(self, text):
         found = []
         if HAS_EMOJI_LIB:
-            found = [c for c in text if c in emoji_lib.EMOJI_DATA]
+            for c in text:
+                if c in emoji_lib.EMOJI_DATA and emoji_lib.EMOJI_DATA[c].get("status", 0) in (0, 1, 2):
+                    found.append(c)
         else:
             emoji_pattern = re.compile(
                 "["
@@ -105,15 +122,8 @@ class Collector:
                 "\U00002702-\U000027B0"
                 "\U000024C2-\U0001F251"
                 "\U0001f926-\U0001f937"
-                "\U00010000-\U0010ffff"
                 "\u2640-\u2642"
                 "\u2600-\u2B55"
-                "\u200d"
-                "\u23cf"
-                "\u23e9"
-                "\u231a"
-                "\ufe0f"
-                "\u3030"
                 "]+",
                 flags=re.UNICODE,
             )
@@ -131,59 +141,81 @@ class Collector:
         words.extend(w.lower() for w in en_words)
         return words
 
-    def _persist(self, rec):
-        scope = rec["scope"]
-        uid = rec["user_id"]
-        ts = rec["timestamp"]
-
-        timing_key = f"{scope}:timing:{uid}"
+    def _persist_profile(self, uid, hour, msg_len, emojis, words, nickname, timestamp):
+        timing_key = f"sonar:profile:{uid}:timing"
         timing = self.storage.get(timing_key, {})
-        hour_str = str(rec["hour"])
+        hour_str = str(hour)
         timing[hour_str] = timing.get(hour_str, 0) + 1
         self.storage.set(timing_key, timing)
 
-        if rec["emojis"]:
-            emoji_key = f"{scope}:emoji:{uid}"
+        if emojis:
+            emoji_key = f"sonar:profile:{uid}:emoji"
             emoji_data = self.storage.get(emoji_key, {})
-            for e in rec["emojis"]:
+            for e in emojis:
                 emoji_data[e] = emoji_data.get(e, 0) + 1
+            if len(emojis) >= 2:
+                combo = "".join(emojis)
+                emoji_data[combo] = emoji_data.get(combo, 0) + 1
+            if len(emoji_data) > 500:
+                sorted_items = sorted(emoji_data.items(), key=lambda x: x[1], reverse=True)
+                emoji_data = dict(sorted_items[:200])
             self.storage.set(emoji_key, emoji_data)
 
-        if rec["words"]:
-            vocab_key = f"{scope}:vocab:{uid}"
+        if words:
+            vocab_key = f"sonar:profile:{uid}:vocab"
             vocab_data = self.storage.get(vocab_key, {})
-            for w in rec["words"]:
+            for w in words:
                 vocab_data[w] = vocab_data.get(w, 0) + 1
             if len(vocab_data) > 200:
                 sorted_items = sorted(vocab_data.items(), key=lambda x: x[1], reverse=True)
                 vocab_data = dict(sorted_items[:100])
             self.storage.set(vocab_key, vocab_data)
 
-        length_key = f"{scope}:length:{uid}"
+        length_key = f"sonar:profile:{uid}:length"
         length_data = self.storage.get(length_key, {"total": 0, "count": 0})
-        length_data["total"] += rec["msg_len"]
+        length_data["total"] += msg_len
         length_data["count"] += 1
         self.storage.set(length_key, length_data)
 
-        if rec["mentions"]:
-            interact_key = f"{scope}:interact:{uid}"
-            interact_data = self.storage.get(interact_key, {})
-            for mentioned_id in rec["mentions"]:
-                if mentioned_id and mentioned_id != uid:
-                    interact_data[mentioned_id] = interact_data.get(mentioned_id, 0) + 1
-            self.storage.set(interact_key, interact_data)
+        info_key = f"sonar:profile:{uid}:info"
+        info = self.storage.get(info_key, {})
+        if not info.get("nickname") and nickname:
+            info["nickname"] = nickname
+        if not info.get("first_seen"):
+            info["first_seen"] = timestamp
+        self.storage.set(info_key, info)
 
+    def _persist_presence(self, scope, uid):
+        key = f"{scope}:presence:{uid}"
+        current = self.storage.get(key, 0)
+        self.storage.set(key, current + 1)
+
+    def _persist_group_user(self, scope, uid, nickname, timestamp):
         users_key = f"{scope}:users"
         users = self.storage.get(users_key, {})
         for uid_key in list(users.keys()):
             if not isinstance(users[uid_key], dict):
                 users[uid_key] = {"nickname": "", "first_seen": users[uid_key]}
         if uid not in users:
-            users[uid] = {"nickname": rec.get("nickname", ""), "first_seen": ts}
-        elif rec.get("nickname"):
-            if not users[uid].get("nickname"):
-                users[uid]["nickname"] = rec["nickname"]
+            users[uid] = {"nickname": nickname, "first_seen": timestamp}
+        elif nickname and not users[uid].get("nickname"):
+            users[uid]["nickname"] = nickname
         self.storage.set(users_key, users)
+
+    def _persist_groups_list(self, uid, scope):
+        groups_key = f"sonar:profile:{uid}:groups"
+        groups = self.storage.get(groups_key, [])
+        if scope not in groups:
+            groups.append(scope)
+            self.storage.set(groups_key, groups)
+
+    def _persist_interact(self, scope, uid, mentions):
+        interact_key = f"{scope}:interact:{uid}"
+        interact_data = self.storage.get(interact_key, {})
+        for mentioned_id in mentions:
+            if mentioned_id and mentioned_id != uid:
+                interact_data[mentioned_id] = interact_data.get(mentioned_id, 0) + 1
+        self.storage.set(interact_key, interact_data)
 
     def _update_cooccurrence(self, scope):
         now = time.time()
@@ -207,9 +239,8 @@ class Collector:
         self.storage.set(cooccur_key, cooccur)
 
     def delete_user_data(self, scope, user_id):
-        suffixes = ["timing", "emoji", "vocab", "length", "interact"]
-        for s in suffixes:
-            self.storage.delete(f"{scope}:{s}:{user_id}")
+        for suffix in ["presence", "interact"]:
+            self.storage.delete(f"{scope}:{suffix}:{user_id}")
 
         users = self.storage.get(f"{scope}:users", {})
         users.pop(user_id, None)
@@ -226,8 +257,34 @@ class Collector:
             optout.append(user_id)
         self.storage.set(f"{scope}:optout", optout)
 
-        cache_key = f"{scope}:cache"
-        self.storage.delete(cache_key)
+        self.storage.delete(f"{scope}:cache")
+
+        groups_key = f"sonar:profile:{user_id}:groups"
+        groups = self.storage.get(groups_key, [])
+        if scope in groups:
+            groups.remove(scope)
+            self.storage.set(groups_key, groups)
+
+    def delete_global_data(self, user_id):
+        groups = self.storage.get(f"sonar:profile:{user_id}:groups", [])
+        for scope in groups:
+            for suffix in ["presence", "interact"]:
+                self.storage.delete(f"{scope}:{suffix}:{user_id}")
+
+            users = self.storage.get(f"{scope}:users", {})
+            users.pop(user_id, None)
+            self.storage.set(f"{scope}:users", users)
+
+            cooccur = self.storage.get(f"{scope}:cooccur", {})
+            to_del = [k for k in cooccur if user_id in k.split("|")]
+            for k in to_del:
+                del cooccur[k]
+            self.storage.set(f"{scope}:cooccur", cooccur)
+
+            self.storage.delete(f"{scope}:cache")
+
+        for suffix in ["timing", "emoji", "vocab", "length", "info", "groups"]:
+            self.storage.delete(f"sonar:profile:{user_id}:{suffix}")
 
     def rejoin_user(self, scope, user_id):
         optout = self.storage.get(f"{scope}:optout", [])
@@ -239,8 +296,123 @@ class Collector:
         all_keys = self.storage.keys()
         scopes = set()
         for k in all_keys:
-            if k.startswith("sonar:") and ":users" in k:
-                parts = k.split(":")
-                if len(parts) >= 3:
-                    scopes.add(f"{parts[1]}:{parts[2]}")
+            if k.startswith("sonar:") and k.endswith(":users"):
+                parts = k.rsplit(":users", 1)[0]
+                if parts.startswith("sonar:") and parts.count(":") >= 2:
+                    rest = parts[6:]
+                    scopes.add(rest)
         return scopes
+
+    def _migrate_if_needed(self):
+        version = self.storage.get("sonar:schema_version", 1)
+        if version >= SCHEMA_VERSION:
+            return
+
+        self.logger.info("开始迁移旧数据到新架构...")
+        try:
+            self._migrate_v1_to_v2()
+            self.storage.set("sonar:schema_version", SCHEMA_VERSION)
+            self.logger.info("数据迁移完成")
+        except Exception as e:
+            self.logger.error(f"数据迁移失败: {e}")
+
+    def _is_valid_emoji(self, char):
+        if HAS_EMOJI_LIB:
+            return char in emoji_lib.EMOJI_DATA and emoji_lib.EMOJI_DATA[char].get("status", 0) in (0, 1, 2)
+        emoji_pattern = re.compile(
+            "["
+            "\U0001F600-\U0001F64F"
+            "\U0001F300-\U0001F5FF"
+            "\U0001F680-\U0001F6FF"
+            "\U0001F1E0-\U0001F1FF"
+            "\U00002702-\U000027B0"
+            "\U000024C2-\U0001F251"
+            "\U0001f926-\U0001f937"
+            "\u2640-\u2642"
+            "\u2600-\u2B55"
+            "]+",
+            flags=re.UNICODE,
+        )
+        return bool(emoji_pattern.fullmatch(char))
+
+    def _migrate_v1_to_v2(self):
+        all_keys = self.storage.keys()
+
+        scopes = set()
+        for k in all_keys:
+            if k.startswith("sonar:") and k.endswith(":users"):
+                parts = k.rsplit(":users", 1)[0]
+                if parts.startswith("sonar:") and parts.count(":") >= 2:
+                    scopes.add(parts)
+
+        for scope in scopes:
+            users = self.storage.get(f"{scope}:users", {})
+            for uid in list(users.keys()):
+                old_timing = self.storage.get(f"{scope}:timing:{uid}", {})
+                if old_timing:
+                    key = f"sonar:profile:{uid}:timing"
+                    existing = self.storage.get(key, {})
+                    for h, c in old_timing.items():
+                        existing[h] = existing.get(h, 0) + c
+                    self.storage.set(key, existing)
+
+                old_emoji = self.storage.get(f"{scope}:emoji:{uid}", {})
+                if old_emoji:
+                    key = f"sonar:profile:{uid}:emoji"
+                    existing = self.storage.get(key, {})
+                    for e, c in old_emoji.items():
+                        if self._is_valid_emoji(e):
+                            existing[e] = existing.get(e, 0) + c
+                    self.storage.set(key, existing)
+
+                old_vocab = self.storage.get(f"{scope}:vocab:{uid}", {})
+                if old_vocab:
+                    key = f"sonar:profile:{uid}:vocab"
+                    existing = self.storage.get(key, {})
+                    for w, c in old_vocab.items():
+                        existing[w] = existing.get(w, 0) + c
+                    if len(existing) > 200:
+                        top = sorted(existing.items(), key=lambda x: x[1], reverse=True)[:100]
+                        existing = dict(top)
+                    self.storage.set(key, existing)
+
+                old_length = self.storage.get(f"{scope}:length:{uid}", {})
+                if isinstance(old_length, dict) and old_length.get("count", 0) > 0:
+                    key = f"sonar:profile:{uid}:length"
+                    existing = self.storage.get(key, {"total": 0, "count": 0})
+                    existing["total"] += old_length.get("total", 0)
+                    existing["count"] += old_length.get("count", 0)
+                    self.storage.set(key, existing)
+
+                    self.storage.set(f"{scope}:presence:{uid}", old_length["count"])
+
+                info_key = f"sonar:profile:{uid}:info"
+                info = self.storage.get(info_key, {})
+                user_data = users.get(uid, {})
+                if isinstance(user_data, dict):
+                    if not info.get("nickname") and user_data.get("nickname"):
+                        info["nickname"] = user_data["nickname"]
+                    if not info.get("first_seen") and user_data.get("first_seen"):
+                        info["first_seen"] = user_data["first_seen"]
+                if info:
+                    self.storage.set(info_key, info)
+
+                groups_key = f"sonar:profile:{uid}:groups"
+                groups = self.storage.get(groups_key, [])
+                if scope not in groups:
+                    groups.append(scope)
+                    self.storage.set(groups_key, groups)
+
+        all_keys = self.storage.keys()
+        for k in all_keys:
+            if k.startswith("sonar:profile:") and k.endswith(":emoji"):
+                data = self.storage.get(k, {})
+                cleaned = {e: c for e, c in data.items() if self._is_valid_emoji(e)}
+                if len(cleaned) != len(data):
+                    self.storage.set(k, cleaned)
+
+        for scope in scopes:
+            users = self.storage.get(f"{scope}:users", {})
+            for uid in list(users.keys()):
+                for suffix in ["timing", "emoji", "vocab", "length"]:
+                    self.storage.delete(f"{scope}:{suffix}:{uid}")

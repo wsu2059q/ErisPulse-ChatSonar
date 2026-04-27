@@ -29,7 +29,7 @@ class Commands:
         async def parallel_cmd(event):
             await self._handle_parallel(event)
 
-        @command("我的位置", help="查看你在群社交圈中的位置")
+        @command("我的位置", help="查看你在社交圈中的位置 / 个人档案")
         async def radar_cmd(event):
             await self._handle_radar(event)
 
@@ -44,18 +44,17 @@ class Commands:
     def _get_scope(self, event):
         platform = event.get_platform()
         detail_type = event.get_detail_type()
-        group_id = event.get_group_id() if detail_type == "group" else f"dm_{event.get_user_id()}"
+        if detail_type != "group":
+            return None, None
+        group_id = event.get_group_id()
         if not group_id:
             return None, None
         return f"sonar:{platform}:{group_id}", group_id
 
     def _get_nickname(self, event, user_id):
-        scope, _ = self._get_scope(event)
-        if scope:
-            users = self.sdk.storage.get(f"{scope}:users", {})
-            user_info = users.get(user_id)
-            if isinstance(user_info, dict) and user_info.get("nickname"):
-                return user_info["nickname"]
+        info = self.sdk.storage.get(f"sonar:profile:{user_id}:info", {})
+        if info.get("nickname"):
+            return info["nickname"]
         sender = event.get_sender()
         if sender and sender.get("user_id") == user_id:
             return sender.get("nickname", "") or sender.get("user_name", "") or user_id
@@ -67,26 +66,26 @@ class Commands:
             return mentions[0]
         args = event.get_command_args()
         if args:
-            raw = event.get_text()
             for arg in args:
                 if arg.startswith("@"):
                     return arg[1:]
         return None
 
-    async def _handle_sonar(self, event):
+    def _require_group(self, event):
         scope, group_id = self._get_scope(event)
         if not scope:
-            await event.reply("无法识别当前群组")
+            return None, None
+        return scope, group_id
+
+    async def _handle_sonar(self, event):
+        scope, group_id = self._require_group(event)
+        if not scope:
+            await event.reply("请在群聊中使用此命令")
             return
 
         data = self.analyzer.compute_distance_matrix(scope, force=True)
         if not data or len(data["users"]) < 2:
-            users = self.analyzer._get_users(scope)
-            min_msg = self.analyzer._min_messages()
-            eligible = [(u, self.analyzer._get_message_count(scope, u)) for u in users]
-            eligible.sort(key=lambda x: x[1], reverse=True)
-            info = "\n".join(f"  {self._get_nickname(event, u)}: {c}条 (需{min_msg}条)" for u, c in eligible[:10])
-            await event.reply(f"数据不足，至少需要 2 位用户各发 {min_msg} 条以上消息\n\n当前数据:\n{info}")
+            await self._reply_insufficient_data(event, scope)
             return
 
         islands = self.analyzer.detect_islands(scope, data)
@@ -95,14 +94,17 @@ class Commands:
         msg_counts = {}
         for uid in data["users"]:
             nicknames[uid] = self._get_nickname(event, uid)
-            msg_counts[uid] = self.analyzer._get_message_count(scope, uid)
+            msg_counts[uid] = self.analyzer._get_presence(scope, uid)
 
         image_bytes = self.visualizer.generate_sonar(
             data["users"], data["matrix"], islands, nicknames, msg_counts
         )
 
+        global_total = sum(self.analyzer._get_global_count(u) for u in data["users"])
+        local_total = sum(msg_counts.values())
+
         text = f"声呐扫描完成\n"
-        text += f"采集 {sum(self.analyzer._get_message_count(scope, u) for u in data['users'])} 条消息，"
+        text += f"采集 {global_total} 条全局消息（本群 {local_total} 条），"
         text += f"覆盖 {len(data['users'])} 位用户，"
         text += f"检测到 {len(islands)} 个岛屿\n\n"
         text += "岛屿分布:\n"
@@ -129,9 +131,9 @@ class Commands:
         await event.reply(text.strip())
 
     async def _handle_ping(self, event):
-        scope, group_id = self._get_scope(event)
+        scope, group_id = self._require_group(event)
         if not scope:
-            await event.reply("无法识别当前群组")
+            await event.reply("请在群聊中使用此命令")
             return
 
         target_id = self._get_mentioned_user(event)
@@ -144,7 +146,7 @@ class Commands:
             await event.reply("你不能探测自己")
             return
 
-        optout = self.storage_get_optout(scope)
+        optout = self.collector.storage_get_optout(scope)
         if target_id in optout:
             await event.reply("该用户已关闭数据收集")
             return
@@ -201,14 +203,14 @@ class Commands:
         await event.reply(text.strip())
 
     async def _handle_islands(self, event):
-        scope, group_id = self._get_scope(event)
+        scope, group_id = self._require_group(event)
         if not scope:
-            await event.reply("无法识别当前群组")
+            await event.reply("请在群聊中使用此命令")
             return
 
         data = self.analyzer.compute_distance_matrix(scope)
         if not data:
-            await event.reply("数据不足")
+            await self._reply_insufficient_data(event, scope)
             return
 
         islands = self.analyzer.detect_islands(scope, data)
@@ -217,6 +219,18 @@ class Commands:
             nicknames[uid] = self._get_nickname(event, uid)
 
         island_names = self._generate_island_names(scope, islands, nicknames)
+
+        msg_counts = {}
+        for uid in data["users"]:
+            msg_counts[uid] = self.analyzer._get_presence(scope, uid)
+
+        image_bytes = self.visualizer.generate_sonar(
+            users=data["users"],
+            matrix=data["matrix"],
+            islands=islands,
+            nicknames=nicknames,
+            msg_counts=msg_counts,
+        )
 
         text = f"岛屿态势报告\n\n"
 
@@ -233,28 +247,40 @@ class Commands:
             drifter_names = "、".join(nicknames.get(u, u) for u in drifters)
             text += f"漂流者({len(drifters)}人)\n  {drifter_names}\n"
 
+        if image_bytes:
+            await event.reply(image_bytes, method="Image")
         await event.reply(text.strip())
 
     async def _handle_parallel(self, event):
-        scope, group_id = self._get_scope(event)
-        if not scope:
-            await event.reply("无法识别当前群组")
+        scope, _ = self._get_scope(event)
+        user_id = event.get_user_id()
+
+        global_count = self.analyzer._get_global_count(user_id)
+        min_msg = self.analyzer._min_messages()
+
+        if global_count < min_msg:
+            await event.reply(f"你总共发送了 {global_count} 条消息，需要至少 {min_msg} 条才能生成画像")
             return
 
-        user_id = event.get_user_id()
-        result = self.analyzer.find_parallel_universe(scope, user_id)
-
-        local = result.get("local") if result else None
-        cross = result.get("cross_scope", []) if result else []
+        if scope:
+            result = self.analyzer.find_parallel_universe(scope, user_id)
+            local = result.get("local") if result else None
+            cross = result.get("cross_scope", []) if result else []
+        else:
+            local = None
+            cross = []
+            all_scopes = self.collector.get_all_scopes()
+            for other_scope_str in all_scopes:
+                other_scope = f"sonar:{other_scope_str}"
+                match = self.analyzer._find_parallel_in_scope(other_scope, user_id)
+                if match:
+                    match["scope"] = other_scope
+                    cross.append(match)
+            cross.sort(key=lambda x: x["similarity"], reverse=True)
+            cross = cross[:3]
 
         if not local and not cross:
-            data = self.analyzer.compute_distance_matrix(scope)
-            if not data or user_id not in data["users"]:
-                count = self.analyzer._get_message_count(scope, user_id)
-                min_msg = self.analyzer._min_messages()
-                await event.reply(f"你的消息数: {count}条 (需要 {min_msg} 条)")
-            else:
-                await event.reply("没有找到另一个你（可能你和所有人都互动过了）")
+            await event.reply("没有找到另一个你（可能你和所有人都互动过了）")
             return
 
         my_name = self._get_nickname(event, user_id)
@@ -278,9 +304,8 @@ class Commands:
                 group_hint = scope_parts[2] if len(scope_parts) > 2 else ""
 
                 other_uid = item["user_id"]
-                other_users = self.sdk.storage.get(f"{other_scope}:users", {})
-                other_info = other_users.get(other_uid, {})
-                other_nick = other_info.get("nickname", "") if isinstance(other_info, dict) else ""
+                other_info = self.sdk.storage.get(f"sonar:profile:{other_uid}:info", {})
+                other_nick = other_info.get("nickname", "")
 
                 label = other_nick or other_uid
                 text += f"  [{platform_name}] {label} (相似度 {int(item['similarity'] * 100)}%)\n"
@@ -314,21 +339,40 @@ class Commands:
         return text
 
     async def _handle_radar(self, event):
-        scope, group_id = self._get_scope(event)
-        if not scope:
-            await event.reply("无法识别当前群组")
+        scope, _ = self._get_scope(event)
+
+        if scope:
+            await self._handle_radar_group(event, scope)
+        else:
+            await self._handle_radar_private(event)
+
+    async def _handle_radar_group(self, event, scope):
+        user_id = event.get_user_id()
+        global_count = self.analyzer._get_global_count(user_id)
+        min_msg = self.analyzer._min_messages()
+
+        if global_count < min_msg:
+            await event.reply(f"你总共发送了 {global_count} 条消息，需要至少 {min_msg} 条才能生成画像")
             return
 
-        user_id = event.get_user_id()
         distances = self.analyzer.get_user_distances(scope, user_id)
 
         if not distances:
-            count = self.analyzer._get_message_count(scope, user_id)
-            min_msg = self.analyzer._min_messages()
-            if count < min_msg:
-                await event.reply(f"你的消息数: {count}条 (需要 {min_msg} 条)")
+            presence = self.analyzer._get_presence(scope, user_id)
+            all_scope_users = self.analyzer._get_users(scope)
+            eligible = self.analyzer._eligible_users(scope)
+            if len(eligible) < 2:
+                info_lines = []
+                for uid in all_scope_users:
+                    g = self.analyzer._get_global_count(uid)
+                    p = self.analyzer._get_presence(scope, uid)
+                    name = self._get_nickname(event, uid)
+                    mark = "✓" if g >= min_msg else "✗"
+                    info_lines.append(f"  {mark} {name}: 全局{g}条, 本群{p}条")
+                details = "\n".join(info_lines[:10])
+                await event.reply(f"本群活跃用户不足，需要至少 2 位用户各有 {min_msg} 条以上消息\n\n{details}")
             else:
-                await event.reply("群里其他人数据不足")
+                await event.reply("你在本群还没有足够的互动数据")
             return
 
         nicknames = {}
@@ -340,7 +384,9 @@ class Commands:
             user_id, distances, nicknames
         )
 
+        presence = self.analyzer._get_presence(scope, user_id)
         text = f"你的社交雷达\n\n"
+        text += f"全局消息: {global_count} 条 | 本群消息: {presence} 条\n\n"
 
         inner = []
         middle = []
@@ -389,45 +435,136 @@ class Commands:
             await event.reply(image_bytes, method="Image")
         await event.reply(text.strip())
 
-    async def _handle_sonaroff(self, event):
-        scope, group_id = self._get_scope(event)
-        if not scope:
-            await event.reply("无法识别当前群组")
+    async def _handle_radar_private(self, event):
+        user_id = event.get_user_id()
+        global_count = self.analyzer._get_global_count(user_id)
+        min_msg = self.analyzer._min_messages()
+
+        if global_count < min_msg:
+            await event.reply(f"你总共发送了 {global_count} 条消息，需要至少 {min_msg} 条才能生成画像")
             return
 
-        user_id = event.get_user_id()
-        await event.reply(
-            "确认关闭声呐数据收集？\n"
-            "将删除你在本群的所有特征数据\n"
-            "已生成的声呐图中你将不再出现\n\n"
-            "回复\"确认\"执行，其他内容取消"
-        )
+        detail = self.analyzer.get_user_detail(user_id)
+        groups = self.analyzer.get_user_groups(user_id)
 
-        reply = await event.wait_reply(timeout=30)
-        if reply and reply.get_text().strip() == "确认":
-            self.collector.delete_user_data(scope, user_id)
+        nickname = self._get_nickname(event, user_id)
+
+        text = f"{nickname} 的全局档案\n\n"
+        text += f"消息统计: 共 {global_count} 条\n"
+
+        if groups:
+            group_details = []
+            real_groups = [g for g in groups if not g.split(":")[-1].startswith("dm_")]
+            for g_scope in real_groups:
+                presence = self.analyzer._get_presence(g_scope, user_id)
+                scope_parts = g_scope.split(":")
+                platform = scope_parts[1] if len(scope_parts) > 1 else "?"
+                gid = scope_parts[2] if len(scope_parts) > 2 else "?"
+                group_details.append(f"  [{platform}] {gid}: {presence}条")
+            if group_details:
+                text += "群聊分布:\n" + "\n".join(group_details) + "\n"
+                text += f"\n活跃群聊: {len(real_groups)} 个\n"
+
+        text += "\n"
+        tags = self._generate_tags(detail)
+        if tags:
+            text += f"社交标签:\n  {tags}\n"
+
+        peak = detail.get("peak_hours", [])
+        if peak:
+            h = int(peak[0])
+            if 0 <= h < 6:
+                period = "夜猫子 (0-6点)"
+            elif 6 <= h < 12:
+                period = "早起鸟 (6-12点)"
+            elif 12 <= h < 18:
+                period = "午后型 (12-18点)"
+            else:
+                period = "晚间型 (18-24点)"
+            text += f"活跃时段: {period}\n"
+
+        top_emoji = detail.get("top_emoji", [])
+        if top_emoji:
+            emoji_str = " ".join(e for e, _ in top_emoji[:5])
+            text += f"常用表情: {emoji_str}\n"
+
+        await event.reply(text.strip())
+
+    async def _handle_sonaroff(self, event):
+        scope, _ = self._get_scope(event)
+        user_id = event.get_user_id()
+
+        if scope:
             await event.reply(
-                "已完成:\n"
-                "- 已删除你的特征记录\n"
-                "- 从距离矩阵中移除\n"
-                "- 后续消息不再采集\n\n"
-                "随时发送 /可以盯我了 重新加入"
+                "确认关闭本群声呐数据收集？\n"
+                "将删除你在本群的互动数据（全局画像保留）\n\n"
+                "回复\"确认\"执行，其他内容取消"
             )
+            reply = await event.wait_reply(timeout=30)
+            if reply and reply.get_text().strip() == "确认":
+                self.collector.delete_user_data(scope, user_id)
+                await event.reply(
+                    "已完成:\n"
+                    "- 已删除本群互动记录\n"
+                    "- 从本群距离矩阵中移除\n"
+                    "- 后续本群消息不再采集\n"
+                    "- 全局画像数据已保留\n\n"
+                    "随时发送 /可以盯我了 重新加入"
+                )
+            else:
+                await event.reply("已取消")
         else:
-            await event.reply("已取消")
+            await event.reply(
+                "确认关闭所有声呐数据收集？\n"
+                "将删除你的全部数据（包括全局画像）\n\n"
+                "回复\"确认\"执行，其他内容取消"
+            )
+            reply = await event.wait_reply(timeout=30)
+            if reply and reply.get_text().strip() == "确认":
+                self.collector.delete_global_data(user_id)
+                await event.reply(
+                    "已完成:\n"
+                    "- 已删除全部特征记录\n"
+                    "- 已清理所有群级数据\n"
+                    "- 后续消息不再采集\n\n"
+                    "随时发送 /可以盯我了 重新加入"
+                )
+            else:
+                await event.reply("已取消")
 
     async def _handle_sonaron(self, event):
-        scope, group_id = self._get_scope(event)
-        if not scope:
-            await event.reply("无法识别当前群组")
-            return
-
+        scope, _ = self._get_scope(event)
         user_id = event.get_user_id()
-        self.collector.rejoin_user(scope, user_id)
-        await event.reply(
-            "已重新加入声呐监测\n"
-            "当前特征数据为空，发几条消息后就能看到你的位置了"
-        )
+
+        if scope:
+            self.collector.rejoin_user(scope, user_id)
+            await event.reply(
+                "已重新加入本群声呐监测\n"
+                "发几条消息后就能看到你的位置了"
+            )
+        else:
+            await event.reply(
+                "已重新加入声呐监测\n"
+                "在群聊中发消息后就能看到你的位置了"
+            )
+
+    async def _reply_insufficient_data(self, event, scope):
+        users = self.analyzer._get_users(scope)
+        min_msg = self.analyzer._min_messages()
+        eligible = self.analyzer._eligible_users(scope)
+        info_lines = []
+        for uid in users:
+            g = self.analyzer._get_global_count(uid)
+            p = self.analyzer._get_presence(scope, uid)
+            name = self._get_nickname(event, uid)
+            mark = "✓" if g >= min_msg else "✗"
+            info_lines.append((g, p, f"  {mark} {name}: 全局{g}条, 本群{p}条"))
+        info_lines.sort(key=lambda x: x[0], reverse=True)
+        details = "\n".join(line for _, _, line in info_lines[:10])
+
+        text = f"本群活跃用户不足，需要至少 2 位用户各有 {min_msg} 条以上消息"
+        text += f"\n（达标用户: {len(eligible)}/{len(users)}）\n\n{details}"
+        await event.reply(text)
 
     def storage_get_optout(self, scope):
         return self.sdk.storage.get(f"{scope}:optout", [])
@@ -489,11 +626,11 @@ class Commands:
         peak = detail.get("peak_hours", [])
         if peak:
             h = int(peak[0])
-            if h >= 0 and h < 6:
+            if 0 <= h < 6:
                 tags.append("夜猫子")
-            elif h >= 6 and h < 12:
+            elif 6 <= h < 12:
                 tags.append("早起鸟")
-            elif h >= 12 and h < 18:
+            elif 12 <= h < 18:
                 tags.append("午后型")
             else:
                 tags.append("晚间型")
@@ -509,7 +646,6 @@ class Commands:
             tags.append("表情包达人")
 
         interact_count = detail.get("interact_targets", 0)
-        total_members = max(detail.get("interact_count", 1), 1)
         if interact_count > 5:
             tags.append("社牛")
         elif interact_count <= 1:

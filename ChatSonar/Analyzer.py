@@ -28,14 +28,17 @@ class Analyzer:
     def _get_users(self, scope):
         return list(self.storage.get(f"{scope}:users", {}).keys())
 
-    def _get_message_count(self, scope, uid):
-        length_data = self.storage.get(f"{scope}:length:{uid}", {"count": 0})
+    def _get_global_count(self, uid):
+        length_data = self.storage.get(f"sonar:profile:{uid}:length", {"count": 0})
         return length_data.get("count", 0)
+
+    def _get_presence(self, scope, uid):
+        return self.storage.get(f"{scope}:presence:{uid}", 0)
 
     def _eligible_users(self, scope):
         users = self._get_users(scope)
         min_msg = self._min_messages()
-        return [u for u in users if self._get_message_count(scope, u) >= min_msg]
+        return [u for u in users if self._get_global_count(u) >= min_msg]
 
     @staticmethod
     def jaccard(set_a, set_b):
@@ -61,28 +64,32 @@ class Analyzer:
             return 0.0
         return dot / (norm_a * norm_b)
 
-    def timing_similarity(self, scope, uid_a, uid_b):
-        ta = self.storage.get(f"{scope}:timing:{uid_a}", {})
-        tb = self.storage.get(f"{scope}:timing:{uid_b}", {})
-        hours_a = set(ta.keys())
-        hours_b = set(tb.keys())
-        if not hours_a and not hours_b:
+    def timing_similarity(self, scope_or_uid_a, uid_b, scope=None):
+        if scope is not None:
+            uid_a = scope_or_uid_a
+        else:
+            uid_a = scope_or_uid_a
+        ta = self.storage.get(f"sonar:profile:{uid_a}:timing", {})
+        tb = self.storage.get(f"sonar:profile:{uid_b}:timing", {})
+        if not ta and not tb:
             return 0.5
         all_hours = set(range(24))
         vec_a = {h: ta.get(str(h), 0) for h in all_hours}
         vec_b = {h: tb.get(str(h), 0) for h in all_hours}
         return self.cosine_sim(vec_a, vec_b)
 
-    def emoji_similarity(self, scope, uid_a, uid_b):
-        ea = self.storage.get(f"{scope}:emoji:{uid_a}", {})
-        eb = self.storage.get(f"{scope}:emoji:{uid_b}", {})
+    def emoji_similarity(self, scope_or_uid_a, uid_b, scope=None):
+        uid_a = scope_or_uid_a
+        ea = self.storage.get(f"sonar:profile:{uid_a}:emoji", {})
+        eb = self.storage.get(f"sonar:profile:{uid_b}:emoji", {})
         if not ea and not eb:
             return 0.5
         return self.cosine_sim(ea, eb)
 
-    def vocab_similarity(self, scope, uid_a, uid_b):
-        va = self.storage.get(f"{scope}:vocab:{uid_a}", {})
-        vb = self.storage.get(f"{scope}:vocab:{uid_b}", {})
+    def vocab_similarity(self, scope_or_uid_a, uid_b, scope=None):
+        uid_a = scope_or_uid_a
+        va = self.storage.get(f"sonar:profile:{uid_a}:vocab", {})
+        vb = self.storage.get(f"sonar:profile:{uid_b}:vocab", {})
         if not va and not vb:
             return 0.5
         return self.cosine_sim(va, vb)
@@ -125,9 +132,9 @@ class Analyzer:
             weights = self._default_weights()
 
         scores = {
-            "timing": self.timing_similarity(scope, uid_a, uid_b),
-            "emoji": self.emoji_similarity(scope, uid_a, uid_b),
-            "vocab": self.vocab_similarity(scope, uid_a, uid_b),
+            "timing": self.timing_similarity(uid_a, uid_b),
+            "emoji": self.emoji_similarity(uid_a, uid_b),
+            "vocab": self.vocab_similarity(uid_a, uid_b),
             "interaction": self.interaction_score(scope, uid_a, uid_b, max_interact),
             "cooccurrence": self.cooccurrence_score(scope, uid_a, uid_b, max_cooccur),
         }
@@ -240,7 +247,7 @@ class Analyzer:
         for k in all_keys:
             if k.startswith("sonar:") and k.endswith(":users"):
                 parts = k.rsplit(":users", 1)[0]
-                if parts != scope:
+                if parts != scope and parts.startswith("sonar:") and parts.count(":") >= 2:
                     all_scopes.add(parts)
 
         for other_scope in all_scopes:
@@ -330,12 +337,17 @@ class Analyzer:
         )
         return sorted_distances
 
-    def get_user_detail(self, scope, user_id):
-        timing = self.storage.get(f"{scope}:timing:{user_id}", {})
-        emoji = self.storage.get(f"{scope}:emoji:{user_id}", {})
-        vocab = self.storage.get(f"{scope}:vocab:{user_id}", {})
-        length = self.storage.get(f"{scope}:length:{user_id}", {"total": 0, "count": 0})
-        interact = self.storage.get(f"{scope}:interact:{user_id}", {})
+    def get_user_detail(self, scope_or_uid, uid=None):
+        if uid is not None:
+            scope = scope_or_uid
+        else:
+            scope = None
+            uid = scope_or_uid
+
+        timing = self.storage.get(f"sonar:profile:{uid}:timing", {})
+        emoji = self.storage.get(f"sonar:profile:{uid}:emoji", {})
+        vocab = self.storage.get(f"sonar:profile:{uid}:vocab", {})
+        length = self.storage.get(f"sonar:profile:{uid}:length", {"total": 0, "count": 0})
 
         active_hours = sorted(timing.items(), key=lambda x: x[1], reverse=True)
         peak_hours = [h for h, _ in active_hours[:3]] if active_hours else []
@@ -347,15 +359,33 @@ class Analyzer:
         if length.get("count", 0) > 0:
             avg_len = round(length["total"] / length["count"], 1)
 
-        return {
+        result = {
             "message_count": length.get("count", 0),
             "avg_length": avg_len,
             "peak_hours": peak_hours,
             "top_emoji": top_emoji,
             "top_vocab": top_vocab,
-            "interact_count": sum(interact.values()),
-            "interact_targets": len(interact),
         }
+
+        if scope:
+            interact = self.storage.get(f"{scope}:interact:{uid}", {})
+            result["interact_count"] = sum(interact.values())
+            result["interact_targets"] = len(interact)
+            result["presence"] = self._get_presence(scope, uid)
+        else:
+            groups = self.storage.get(f"sonar:profile:{uid}:groups", [])
+            total_interact_count = 0
+            total_interact_targets = set()
+            for g_scope in groups:
+                interact = self.storage.get(f"{g_scope}:interact:{uid}", {})
+                total_interact_count += sum(interact.values())
+                total_interact_targets.update(interact.keys())
+            result["interact_count"] = total_interact_count
+            result["interact_targets"] = len(total_interact_targets)
+            result["presence"] = length.get("count", 0)
+            result["groups_count"] = len(groups)
+
+        return result
 
     def get_interact_detail(self, scope, uid_a, uid_b):
         ia = self.storage.get(f"{scope}:interact:{uid_a}", {})
@@ -363,8 +393,8 @@ class Analyzer:
         a_to_b = ia.get(uid_b, 0)
         b_to_a = ib.get(uid_a, 0)
 
-        timing_a = self.storage.get(f"{scope}:timing:{uid_a}", {})
-        timing_b = self.storage.get(f"{scope}:timing:{uid_b}", {})
+        timing_a = self.storage.get(f"sonar:profile:{uid_a}:timing", {})
+        timing_b = self.storage.get(f"sonar:profile:{uid_b}:timing", {})
         overlap = [h for h in timing_a if h in timing_b and timing_a[h] > 0 and timing_b[h] > 0]
         overlap.sort()
 
@@ -378,3 +408,6 @@ class Analyzer:
     def get_cooccur_count(self, scope, uid_a, uid_b):
         cooccur = self.storage.get(f"{scope}:cooccur", {})
         return cooccur.get(f"{uid_a}|{uid_b}", 0)
+
+    def get_user_groups(self, uid):
+        return self.storage.get(f"sonar:profile:{uid}:groups", [])

@@ -93,6 +93,8 @@ class Main(BaseModule):
             scope = request.query_params.get("scope")
             if not scope:
                 return {"error": "scope parameter required"}
+            if not scope.startswith("sonar:"):
+                scope = f"sonar:{scope}"
             data = self.analyzer.compute_distance_matrix(scope)
             if not data:
                 return {"error": "no data"}
@@ -106,6 +108,8 @@ class Main(BaseModule):
             scope = request.query_params.get("scope")
             if not scope:
                 return {"error": "scope parameter required"}
+            if not scope.startswith("sonar:"):
+                scope = f"sonar:{scope}"
             data = self.analyzer.compute_distance_matrix(scope)
             if not data:
                 return {"error": "no data"}

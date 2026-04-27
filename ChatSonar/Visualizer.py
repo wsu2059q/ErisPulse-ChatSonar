@@ -1,6 +1,8 @@
 import io
 import math
 import os
+import re
+import warnings
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
@@ -8,12 +10,42 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from matplotlib.colors import LinearSegmentedColormap
 
+warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
+
 
 class Visualizer:
     SONAR_COLORS = [
         "#00ff88", "#00bbff", "#ffaa00", "#ff4466",
         "#aa66ff", "#00ffcc", "#ff8844", "#88ff44",
     ]
+
+    _EMOJI_RE = re.compile(
+        "["
+        "\U0001F600-\U0001F64F"
+        "\U0001F300-\U0001F5FF"
+        "\U0001F680-\U0001F6FF"
+        "\U0001F1E0-\U0001F1FF"
+        "\U00002702-\U000027B0"
+        "\U000024C2-\U0001F251"
+        "\U0001f926-\U0001f937"
+        "\U00010000-\U0010ffff"
+        "\u2640-\u2642"
+        "\u2600-\u2B55"
+        "\u200d"
+        "\u23cf"
+        "\u23e9"
+        "\u231a"
+        "\ufe0f"
+        "\u3030"
+        "\u20e3"
+        "\uFE0F"
+        "]+",
+        flags=re.UNICODE,
+    )
+
+    @classmethod
+    def _strip_emoji(cls, text):
+        return cls._EMOJI_RE.sub("", text).strip() or text
 
     def __init__(self, sdk, config):
         self.sdk = sdk
@@ -209,7 +241,7 @@ class Visualizer:
             offset_y = 12 if y >= 0 else -12
             
             # 标签背景框（避免与线条重叠）
-            label = nicknames.get(uid, uid)
+            label = self._strip_emoji(nicknames.get(uid, uid))
             bbox_props = dict(boxstyle='round,pad=0.4', facecolor='#0a0a1a', 
                              edgecolor=color, alpha=0.7, linewidth=0.8)
             ax.annotate(label, (x, y), textcoords="offset points",
@@ -396,7 +428,7 @@ class Visualizer:
             offset_x = 12 if x >= 0 else -12
             offset_y = 12 if y >= 0 else -12
             
-            label = nicknames.get(uid, uid)
+            label = self._strip_emoji(nicknames.get(uid, uid))
             dist_text = f"{label}\n{dist:.2f}"
             bbox_props = dict(boxstyle='round,pad=0.4', facecolor='#0a0a1a', 
                              edgecolor=color, alpha=0.75, linewidth=0.8)
@@ -408,7 +440,7 @@ class Visualizer:
         # 中心用户（自己）
         ax.scatter(0, 0, s=250, c="#00ff88", marker="*", zorder=10,
                    edgecolors="white", linewidths=1.5)
-        label_me = nicknames.get(user_id, user_id)
+        label_me = self._strip_emoji(nicknames.get(user_id, user_id))
         ax.annotate(label_me, (0, 0), textcoords="offset points",
                     xytext=(12, -18), fontsize=11, color="#00ff88",
                     fontweight="bold",
