@@ -15,6 +15,8 @@ SCHEMA_VERSION = 2
 
 
 class Collector:
+    _MAX_ACTIVE_USERS_PER_SCOPE = 200
+
     def __init__(self, sdk, config):
         self.sdk = sdk
         self.logger = sdk.logger.get_child("ChatSonar.Collector")
@@ -98,9 +100,22 @@ class Collector:
             if mentions:
                 self._persist_interact(scope, user_id, mentions)
 
-            self._last_active.setdefault(scope, {})
-            self._last_active[scope][user_id] = time.time()
-            if len(self._last_active.get(scope, {})) >= 2:
+            now = time.time()
+            window = self.config.get("cooccur_window", 300)
+            scope_active = self._last_active.get(scope)
+            if scope_active is None:
+                scope_active = {}
+                self._last_active[scope] = scope_active
+            scope_active[user_id] = now
+            if len(scope_active) > self._MAX_ACTIVE_USERS_PER_SCOPE:
+                expired = [uid for uid, t in scope_active.items() if now - t >= window]
+                for uid in expired:
+                    del scope_active[uid]
+                if len(scope_active) > self._MAX_ACTIVE_USERS_PER_SCOPE:
+                    sorted_users = sorted(scope_active.items(), key=lambda x: x[1])
+                    for uid, _ in sorted_users[:len(scope_active) - self._MAX_ACTIVE_USERS_PER_SCOPE]:
+                        del scope_active[uid]
+            if len(scope_active) >= 2:
                 try:
                     self._update_cooccurrence(scope)
                 except Exception as e:
@@ -153,9 +168,6 @@ class Collector:
             emoji_data = self.storage.get(emoji_key, {})
             for e in emojis:
                 emoji_data[e] = emoji_data.get(e, 0) + 1
-            if len(emojis) >= 2:
-                combo = "".join(emojis)
-                emoji_data[combo] = emoji_data.get(combo, 0) + 1
             if len(emoji_data) > 500:
                 sorted_items = sorted(emoji_data.items(), key=lambda x: x[1], reverse=True)
                 emoji_data = dict(sorted_items[:200])

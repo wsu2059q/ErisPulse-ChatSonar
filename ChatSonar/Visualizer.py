@@ -43,6 +43,8 @@ class Visualizer:
         flags=re.UNICODE,
     )
 
+    _font_initialized = False
+
     @classmethod
     def _strip_emoji(cls, text):
         return cls._EMOJI_RE.sub("", text).strip() or text
@@ -52,31 +54,32 @@ class Visualizer:
         self.logger = sdk.logger.get_child("ChatSonar.Visualizer")
         self.config = config
         self._font_prop = None
-        self._setup_fonts()
+        if not Visualizer._font_initialized:
+            Visualizer._font_initialized = True
+            self._setup_fonts()
 
-    def _setup_fonts(self):
+    @classmethod
+    def _setup_fonts(cls):
         font_dir = os.path.join(os.path.dirname(__file__), "fonts")
         bundled = os.path.join(font_dir, "SourceHanSansSC-Regular.otf")
         if os.path.exists(bundled):
             try:
                 fm.fontManager.addfont(bundled)
                 prop = fm.FontProperties(fname=bundled)
-                self._font_prop = prop
                 plt.rcParams["font.sans-serif"] = [prop.get_name()] + plt.rcParams.get("font.sans-serif", [])
             except Exception as e:
-                self.logger.warning(f"Failed to load bundled font: {e}")
+                warnings.warn(f"Failed to load bundled font: {e}")
 
-        if not self._font_prop:
-            candidates = [
-                "Microsoft YaHei", "SimHei", "PingFang SC",
-                "WenQuanYi Micro Hei", "Noto Sans CJK SC",
-                "STHeiti", "Arial Unicode MS",
-            ]
-            available = {f.name for f in fm.fontManager.ttflist}
-            for name in candidates:
-                if name in available:
-                    plt.rcParams["font.sans-serif"] = [name]
-                    break
+        candidates = [
+            "Microsoft YaHei", "SimHei", "PingFang SC",
+            "WenQuanYi Micro Hei", "Noto Sans CJK SC",
+            "STHeiti", "Arial Unicode MS",
+        ]
+        available = {f.name for f in fm.fontManager.ttflist}
+        for name in candidates:
+            if name in available:
+                plt.rcParams["font.sans-serif"] = [name]
+                break
         plt.rcParams["axes.unicode_minus"] = False
 
     def _mds_2d(self, users, matrix):
