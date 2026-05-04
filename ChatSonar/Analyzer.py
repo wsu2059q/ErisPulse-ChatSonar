@@ -257,7 +257,12 @@ class Analyzer:
                 results_cross.append(cross)
 
         results_cross.sort(key=lambda x: x["similarity"], reverse=True)
-        top_cross = results_cross[:3] if results_cross else []
+        seen = {}
+        for item in results_cross:
+            uid = item["user_id"]
+            if uid not in seen or item["similarity"] > seen[uid]["similarity"]:
+                seen[uid] = item
+        top_cross = sorted(seen.values(), key=lambda x: x["similarity"], reverse=True)[:3]
 
         return {
             "local": result_local,

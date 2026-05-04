@@ -1,5 +1,7 @@
 import io
 
+from .Templates import SonarTemplates
+
 
 class Commands:
     def __init__(self, sdk, collector, analyzer, visualizer, config):
@@ -77,6 +79,36 @@ class Commands:
             return None, None
         return scope, group_id
 
+    def _get_command_prefix(self) -> str:
+        try:
+            from ErisPulse.Core import config
+            event_config = config.getConfig("ErisPulse.event", {})
+            command_config = event_config.get("command", {})
+            return command_config.get("prefix", "/")
+        except Exception:
+            return "/"
+
+    def _select_best_format(self, platform, templates):
+        try:
+            supported = self.sdk.adapter.list_sends(platform)
+            if "Html" in supported:
+                return ("Html", templates["html"])
+            elif "Markdown" in supported:
+                return ("Markdown", templates["markdown"])
+            return ("Text", templates["text"])
+        except Exception:
+            return ("Text", templates["text"])
+
+    async def _send_with_format(self, event, templates, image_bytes=None):
+        if image_bytes:
+            await event.reply(image_bytes, method="Image")
+        platform = event.get_platform()
+        fmt, content = self._select_best_format(platform, templates)
+        try:
+            await event.reply(content, method=fmt)
+        except Exception:
+            await event.reply(templates["text"])
+
     async def _handle_sonar(self, event):
         scope, group_id = self._require_group(event)
         if not scope:
@@ -103,32 +135,17 @@ class Commands:
         global_total = sum(self.analyzer._get_global_count(u) for u in data["users"])
         local_total = sum(msg_counts.values())
 
-        text = f"声呐扫描完成\n"
-        text += f"采集 {global_total} 条全局消息（本群 {local_total} 条），"
-        text += f"覆盖 {len(data['users'])} 位用户，"
-        text += f"检测到 {len(islands)} 个岛屿\n\n"
-        text += "岛屿分布:\n"
-        text += "─" * 20 + "\n"
-
         island_names = self._generate_island_names(scope, islands, nicknames)
-        for idx, island in enumerate(islands):
-            name = island_names[idx]
-            members_str = "、".join(nicknames.get(m, m) for m in island["members"])
-            text += f"{name}({island['size']}人)\n"
-            text += f"  {members_str}\n"
-            text += f"  内部距离: {island['avg_distance']}\n\n"
 
         drifters = [u for u in data["users"]
                      if not any(u in isl["members"] for isl in islands)]
-        if drifters:
-            drifter_names = "、".join(nicknames.get(u, u) for u in drifters)
-            text += f"漂流者({len(drifters)}人)\n  {drifter_names}\n\n"
 
-        text += "用 /亲密度 @某人 查看具体距离"
-
-        if image_bytes:
-            await event.reply(image_bytes, method="Image")
-        await event.reply(text.strip())
+        prefix = self._get_command_prefix()
+        templates = SonarTemplates.build_sonar(
+            global_total, local_total, len(data["users"]),
+            len(islands), islands, island_names, drifters, nicknames, prefix
+        )
+        await self._send_with_format(event, templates, image_bytes)
 
     async def _handle_ping(self, event):
         scope, group_id = self._require_group(event)
@@ -146,7 +163,7 @@ class Commands:
             await event.reply("你不能探测自己")
             return
 
-        optout = self.collector.storage_get_optout(scope)
+        optout = self.storage_get_optout(scope)
         if target_id in optout:
             await event.reply("该用户已关闭数据收集")
             return
@@ -158,49 +175,19 @@ class Commands:
         nickname_a = self._get_nickname(event, user_id)
         nickname_b = self._get_nickname(event, target_id)
 
-        text = f"亲密度报告\n\n"
-        text += f"{nickname_a} <-> {nickname_b}\n"
-        text += f"综合距离: {dist:.2f} ({dist_label})\n\n"
-        text += "维度分析:\n"
-
-        dim_names = {
-            "timing": "时段重叠",
-            "emoji": "表情相似",
-            "vocab": "词汇相似",
-            "interaction": "直接互动",
-            "cooccurrence": "共现频率",
-        }
-        for dim, label in dim_names.items():
-            val = scores.get(dim, 0)
-            pct = int(val * 100)
-            filled = int(val * 10)
-            bar = "█" * filled + "░" * (10 - filled)
-            text += f"{label}  {bar} {pct}%\n"
-
         radar_bytes = self.visualizer.generate_radar_chart(scores)
-        if radar_bytes:
-            await event.reply(radar_bytes, method="Image")
 
         interact = self.analyzer.get_interact_detail(scope, user_id, target_id)
         cooccur_count = self.analyzer.get_cooccur_count(scope, user_id, target_id)
 
-        if interact["reply_total"] > 0 or cooccur_count > 0:
-            text += f"\n互动记录:\n"
-            if interact["a_to_b"] > 0 or interact["b_to_a"] > 0:
-                text += f"- 你 @了TA {interact['a_to_b']} 次\n"
-                text += f"- TA @了你 {interact['b_to_a']} 次\n"
-                text += f"- 互相回复 {interact['reply_total']} 次\n"
-            if interact["shared_hours"]:
-                hours_str = ", ".join(f"{h}:00" for h in interact["shared_hours"][:4])
-                text += f"- 共同活跃时段: {hours_str}\n"
-            if cooccur_count > 0:
-                text += f"- 共现次数: {cooccur_count}\n"
-
         rank = self._get_distance_rank(scope, user_id, target_id)
-        if rank:
-            text += f"\n你们是本群第 {rank} 亲密的组合"
 
-        await event.reply(text.strip())
+        prefix = self._get_command_prefix()
+        templates = SonarTemplates.build_ping(
+            nickname_a, nickname_b, dist, dist_label, scores,
+            interact, cooccur_count, rank, prefix
+        )
+        await self._send_with_format(event, templates, radar_bytes)
 
     async def _handle_islands(self, event):
         scope, group_id = self._require_group(event)
@@ -232,24 +219,18 @@ class Commands:
             msg_counts=msg_counts,
         )
 
-        text = f"岛屿态势报告\n\n"
-
-        for idx, island in enumerate(islands):
-            name = island_names[idx]
-            members_str = "、".join(nicknames.get(m, m) for m in island["members"])
-            text += f"{name}({island['size']}人)\n"
-            text += f"  {members_str}\n"
-            text += f"  内部距离: {island['avg_distance']}\n\n"
+        global_total = sum(self.analyzer._get_global_count(u) for u in data["users"])
+        local_total = sum(msg_counts.values())
 
         drifters = [u for u in data["users"]
                      if not any(u in isl["members"] for isl in islands)]
-        if drifters:
-            drifter_names = "、".join(nicknames.get(u, u) for u in drifters)
-            text += f"漂流者({len(drifters)}人)\n  {drifter_names}\n"
 
-        if image_bytes:
-            await event.reply(image_bytes, method="Image")
-        await event.reply(text.strip())
+        prefix = self._get_command_prefix()
+        templates = SonarTemplates.build_sonar(
+            global_total, local_total, len(data["users"]),
+            len(islands), islands, island_names, drifters, nicknames, prefix
+        )
+        await self._send_with_format(event, templates, image_bytes)
 
     async def _handle_parallel(self, event):
         scope, _ = self._get_scope(event)
@@ -276,67 +257,31 @@ class Commands:
                 if match:
                     match["scope"] = other_scope
                     cross.append(match)
-            cross.sort(key=lambda x: x["similarity"], reverse=True)
-            cross = cross[:3]
-
-        if not local and not cross:
-            await event.reply("没有找到另一个你（可能你和所有人都互动过了）")
-            return
+            seen = {}
+            for item in cross:
+                uid = item["user_id"]
+                if uid not in seen or item["similarity"] > seen[uid]["similarity"]:
+                    seen[uid] = item
+            cross = sorted(seen.values(), key=lambda x: x["similarity"], reverse=True)[:3]
 
         my_name = self._get_nickname(event, user_id)
-        text = "正在寻找另一个你...\n\n"
 
         if local:
-            target = local
-            tname = self._get_nickname(event, target["user_id"])
-            text += f"本群匹配:\n"
-            text += f"  {my_name} <-> {tname}\n"
-            text += f"  相似度: {int(target['similarity'] * 100)}%\n"
-            text += self._format_parallel_reason(target["scores"])
-            text += f"  试试 /亲密度 @{tname} 看看详细距离\n\n"
+            local["nickname"] = self._get_nickname(event, local["user_id"])
 
-        if cross:
-            text += f"跨群匹配 (找到 {len(cross)} 个):\n"
-            for item in cross:
-                other_scope = item["scope"]
-                scope_parts = other_scope.split(":")
-                platform_name = scope_parts[1] if len(scope_parts) > 1 else "未知"
-                group_hint = scope_parts[2] if len(scope_parts) > 2 else ""
+        for item in cross:
+            other_uid = item["user_id"]
+            other_info = self.sdk.storage.get(f"sonar:profile:{other_uid}:info", {})
+            item["nickname"] = other_info.get("nickname", "") or other_uid
 
-                other_uid = item["user_id"]
-                other_info = self.sdk.storage.get(f"sonar:profile:{other_uid}:info", {})
-                other_nick = other_info.get("nickname", "")
+        prefix = self._get_command_prefix()
 
-                label = other_nick or other_uid
-                text += f"  [{platform_name}] {label} (相似度 {int(item['similarity'] * 100)}%)\n"
+        if not local and not cross:
+            templates = SonarTemplates.build_parallel(my_name, None, None, None, prefix)
+        else:
+            templates = SonarTemplates.build_parallel(my_name, local, cross, None, prefix)
 
-                scores = item.get("scores", {})
-                details = []
-                if scores.get("timing", 0) > 0.6:
-                    details.append(f"时段{int(scores['timing'] * 100)}%")
-                if scores.get("emoji", 0) > 0.6:
-                    details.append(f"表情{int(scores['emoji'] * 100)}%")
-                if scores.get("vocab", 0) > 0.6:
-                    details.append(f"词汇{int(scores['vocab'] * 100)}%")
-                if details:
-                    text += f"    匹配项: {', '.join(details)}\n"
-                text += f"    用户ID: {other_uid}\n"
-
-        await event.reply(text.strip())
-
-    def _format_parallel_reason(self, scores):
-        text = ""
-        checks = [
-            ("  活跃时段匹配度", "timing"),
-            ("  消息风格相似", "vocab"),
-            ("  表情使用偏好", "emoji"),
-        ]
-        for label, dim in checks:
-            val = scores.get(dim, 0)
-            pct = int(val * 100)
-            mark = "+" if val >= 0.6 else "-"
-            text += f"    {mark} {label} {pct}%\n"
-        return text
+        await self._send_with_format(event, templates)
 
     async def _handle_radar(self, event):
         scope, _ = self._get_scope(event)
@@ -385,55 +330,27 @@ class Commands:
         )
 
         presence = self.analyzer._get_presence(scope, user_id)
-        text = f"你的社交雷达\n\n"
-        text += f"全局消息: {global_count} 条 | 本群消息: {presence} 条\n\n"
 
-        inner = []
-        middle = []
-        outer = []
-        dark = []
+        rings = {"inner": [], "middle": [], "outer": [], "dark": []}
         for uid, info in distances.items():
             d = info["distance"]
             name = nicknames.get(uid, uid)
             if d < 0.3:
-                inner.append((name, d))
+                rings["inner"].append((name, d))
             elif d < 0.6:
-                middle.append((name, d))
+                rings["middle"].append((name, d))
             elif d < 0.8:
-                outer.append((name, d))
+                rings["outer"].append((name, d))
             else:
-                dark.append((name, d))
-
-        if inner:
-            text += "内圈 (距离 < 0.3)\n"
-            for name, d in inner:
-                text += f"  {name} ({d:.2f})\n"
-            text += "\n"
-        if middle:
-            text += "中圈 (0.3 ~ 0.6)\n"
-            for name, d in middle:
-                text += f"  {name} ({d:.2f})\n"
-            text += "\n"
-        if outer:
-            text += "外圈 (0.6 ~ 0.8)\n"
-            for name, d in outer:
-                text += f"  {name} ({d:.2f})\n"
-            text += "\n"
-        if dark:
-            text += "暗区 (> 0.8)\n"
-            for name, d in dark:
-                text += f"  {name} ({d:.2f})\n"
+                rings["dark"].append((name, d))
 
         detail = self.analyzer.get_user_detail(scope, user_id)
-        if detail:
-            text += "\n"
-            tags = self._generate_tags(detail)
-            if tags:
-                text += f"你的社交标签:\n{tags}"
+        tags = self._generate_tags(detail) if detail else ""
 
-        if image_bytes:
-            await event.reply(image_bytes, method="Image")
-        await event.reply(text.strip())
+        templates = SonarTemplates.build_radar_group(
+            global_count, presence, rings, tags
+        )
+        await self._send_with_format(event, templates, image_bytes)
 
     async def _handle_radar_private(self, event):
         user_id = event.get_user_id()
@@ -449,46 +366,38 @@ class Commands:
 
         nickname = self._get_nickname(event, user_id)
 
-        text = f"{nickname} 的全局档案\n\n"
-        text += f"消息统计: 共 {global_count} 条\n"
-
+        group_tuples = []
         if groups:
-            group_details = []
             real_groups = [g for g in groups if not g.split(":")[-1].startswith("dm_")]
             for g_scope in real_groups:
                 presence = self.analyzer._get_presence(g_scope, user_id)
                 scope_parts = g_scope.split(":")
                 platform = scope_parts[1] if len(scope_parts) > 1 else "?"
                 gid = scope_parts[2] if len(scope_parts) > 2 else "?"
-                group_details.append(f"  [{platform}] {gid}: {presence}条")
-            if group_details:
-                text += "群聊分布:\n" + "\n".join(group_details) + "\n"
-                text += f"\n活跃群聊: {len(real_groups)} 个\n"
+                group_tuples.append((platform, gid, presence))
 
-        text += "\n"
-        tags = self._generate_tags(detail)
-        if tags:
-            text += f"社交标签:\n  {tags}\n"
+        tags = self._generate_tags(detail) if detail else ""
 
-        peak = detail.get("peak_hours", [])
-        if peak:
-            h = int(peak[0])
-            if 0 <= h < 6:
-                period = "夜猫子 (0-6点)"
-            elif 6 <= h < 12:
-                period = "早起鸟 (6-12点)"
-            elif 12 <= h < 18:
-                period = "午后型 (12-18点)"
-            else:
-                period = "晚间型 (18-24点)"
-            text += f"活跃时段: {period}\n"
+        peak_period = ""
+        if detail:
+            peak = detail.get("peak_hours", [])
+            if peak:
+                h = int(peak[0])
+                if 0 <= h < 6:
+                    peak_period = "夜猫子 (0-6点)"
+                elif 6 <= h < 12:
+                    peak_period = "早起鸟 (6-12点)"
+                elif 12 <= h < 18:
+                    peak_period = "午后型 (12-18点)"
+                else:
+                    peak_period = "晚间型 (18-24点)"
 
-        top_emoji = detail.get("top_emoji", [])
-        if top_emoji:
-            emoji_str = " ".join(e for e, _ in top_emoji[:5])
-            text += f"常用表情: {emoji_str}\n"
+        top_emoji = detail.get("top_emoji", []) if detail else []
 
-        await event.reply(text.strip())
+        templates = SonarTemplates.build_radar_private(
+            nickname, global_count, group_tuples, tags, peak_period, top_emoji
+        )
+        await self._send_with_format(event, templates)
 
     async def _handle_sonaroff(self, event):
         scope, _ = self._get_scope(event)
