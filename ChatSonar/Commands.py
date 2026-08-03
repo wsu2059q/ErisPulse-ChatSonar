@@ -1,5 +1,3 @@
-import io
-
 from .Templates import SonarTemplates
 
 
@@ -88,22 +86,30 @@ class Commands:
         except Exception:
             return "/"
 
-    def _select_best_format(self, platform, templates):
+    def _select_best_format(self, event, templates):
         try:
-            supported = self.sdk.adapter.list_sends(platform)
-            if "Html" in supported:
+            if event.supports("Html"):
                 return ("Html", templates["html"])
-            elif "Markdown" in supported:
+            if event.supports("Markdown"):
                 return ("Markdown", templates["markdown"])
-            return ("Text", templates["text"])
         except Exception:
-            return ("Text", templates["text"])
+            pass
+        return ("Text", templates["text"])
+
+    def _supports_image(self, event):
+        try:
+            return event.supports("Image")
+        except Exception:
+            return False
 
     async def _send_with_format(self, event, templates, image_bytes=None):
-        if image_bytes:
-            await event.reply(image_bytes, method="Image")
-        platform = event.get_platform()
-        fmt, content = self._select_best_format(platform, templates)
+        if image_bytes and self._supports_image(event):
+            try:
+                await event.reply(image_bytes, method="Image")
+                return
+            except Exception as e:
+                self.logger.warning(f"图片发送失败，回退到文本: {e}")
+        fmt, content = self._select_best_format(event, templates)
         try:
             await event.reply(content, method=fmt)
         except Exception:
@@ -128,10 +134,6 @@ class Commands:
             nicknames[uid] = self._get_nickname(event, uid)
             msg_counts[uid] = self.analyzer._get_presence(scope, uid)
 
-        image_bytes = self.visualizer.generate_sonar(
-            data["users"], data["matrix"], islands, nicknames, msg_counts
-        )
-
         global_total = sum(self.analyzer._get_global_count(u) for u in data["users"])
         local_total = sum(msg_counts.values())
 
@@ -141,6 +143,15 @@ class Commands:
                      if not any(u in isl["members"] for isl in islands)]
 
         prefix = self._get_command_prefix()
+
+        image_bytes = self.visualizer.render_sonar(
+            users=data["users"], matrix=data["matrix"], islands=islands,
+            nicknames=nicknames, msg_counts=msg_counts,
+            island_names=island_names, drifters=drifters,
+            global_total=global_total, local_total=local_total,
+            command_prefix=prefix,
+        )
+
         templates = SonarTemplates.build_sonar(
             global_total, local_total, len(data["users"]),
             len(islands), islands, island_names, drifters, nicknames, prefix
@@ -175,14 +186,17 @@ class Commands:
         nickname_a = self._get_nickname(event, user_id)
         nickname_b = self._get_nickname(event, target_id)
 
-        radar_bytes = self.visualizer.generate_radar_chart(scores)
-
         interact = self.analyzer.get_interact_detail(scope, user_id, target_id)
         cooccur_count = self.analyzer.get_cooccur_count(scope, user_id, target_id)
-
         rank = self._get_distance_rank(scope, user_id, target_id)
-
         prefix = self._get_command_prefix()
+
+        radar_bytes = self.visualizer.render_intimacy(
+            nickname_a=nickname_a, nickname_b=nickname_b, dist=dist,
+            dist_label=dist_label, scores=scores, interact=interact,
+            cooccur_count=cooccur_count, rank=rank, command_prefix=prefix,
+        )
+
         templates = SonarTemplates.build_ping(
             nickname_a, nickname_b, dist, dist_label, scores,
             interact, cooccur_count, rank, prefix
@@ -211,14 +225,6 @@ class Commands:
         for uid in data["users"]:
             msg_counts[uid] = self.analyzer._get_presence(scope, uid)
 
-        image_bytes = self.visualizer.generate_sonar(
-            users=data["users"],
-            matrix=data["matrix"],
-            islands=islands,
-            nicknames=nicknames,
-            msg_counts=msg_counts,
-        )
-
         global_total = sum(self.analyzer._get_global_count(u) for u in data["users"])
         local_total = sum(msg_counts.values())
 
@@ -226,6 +232,20 @@ class Commands:
                      if not any(u in isl["members"] for isl in islands)]
 
         prefix = self._get_command_prefix()
+
+        image_bytes = self.visualizer.render_sonar(
+            users=data["users"],
+            matrix=data["matrix"],
+            islands=islands,
+            nicknames=nicknames,
+            msg_counts=msg_counts,
+            island_names=island_names,
+            drifters=drifters,
+            global_total=global_total,
+            local_total=local_total,
+            command_prefix=prefix,
+        )
+
         templates = SonarTemplates.build_sonar(
             global_total, local_total, len(data["users"]),
             len(islands), islands, island_names, drifters, nicknames, prefix
@@ -243,26 +263,9 @@ class Commands:
             await event.reply(f"你总共发送了 {global_count} 条消息，需要至少 {min_msg} 条才能生成画像")
             return
 
-        if scope:
-            result = self.analyzer.find_parallel_universe(scope, user_id)
-            local = result.get("local") if result else None
-            cross = result.get("cross_scope", []) if result else []
-        else:
-            local = None
-            cross = []
-            all_scopes = self.collector.get_all_scopes()
-            for other_scope_str in all_scopes:
-                other_scope = f"sonar:{other_scope_str}"
-                match = self.analyzer._find_parallel_in_scope(other_scope, user_id)
-                if match:
-                    match["scope"] = other_scope
-                    cross.append(match)
-            seen = {}
-            for item in cross:
-                uid = item["user_id"]
-                if uid not in seen or item["similarity"] > seen[uid]["similarity"]:
-                    seen[uid] = item
-            cross = sorted(seen.values(), key=lambda x: x["similarity"], reverse=True)[:3]
+        result = self.analyzer.find_parallel_universe(scope, user_id)
+        local = result.get("local") if result else None
+        cross = result.get("cross_scope", []) if result else []
 
         my_name = self._get_nickname(event, user_id)
 
@@ -281,7 +284,11 @@ class Commands:
         else:
             templates = SonarTemplates.build_parallel(my_name, local, cross, None, prefix)
 
-        await self._send_with_format(event, templates)
+        image_bytes = self.visualizer.render_parallel(
+            my_name=my_name, local=local, cross=cross, command_prefix=prefix,
+        )
+
+        await self._send_with_format(event, templates, image_bytes)
 
     async def _handle_radar(self, event):
         scope, _ = self._get_scope(event)
@@ -325,10 +332,6 @@ class Commands:
             nicknames[uid] = self._get_nickname(event, uid)
         nicknames[user_id] = self._get_nickname(event, user_id)
 
-        image_bytes = self.visualizer.generate_personal_radar(
-            user_id, distances, nicknames
-        )
-
         presence = self.analyzer._get_presence(scope, user_id)
 
         rings = {"inner": [], "middle": [], "outer": [], "dark": []}
@@ -346,6 +349,12 @@ class Commands:
 
         detail = self.analyzer.get_user_detail(scope, user_id)
         tags = self._generate_tags(detail) if detail else ""
+
+        image_bytes = self.visualizer.render_personal_radar(
+            user_id=user_id, distances=distances, nicknames=nicknames,
+            global_count=global_count, presence=presence,
+            command_prefix=self._get_command_prefix(),
+        )
 
         templates = SonarTemplates.build_radar_group(
             global_count, presence, rings, tags
@@ -394,10 +403,15 @@ class Commands:
 
         top_emoji = detail.get("top_emoji", []) if detail else []
 
+        image_bytes = self.visualizer.render_profile(
+            nickname=nickname, global_count=global_count, groups=group_tuples,
+            tags=tags, peak_period=peak_period, top_emoji=top_emoji,
+        )
+
         templates = SonarTemplates.build_radar_private(
             nickname, global_count, group_tuples, tags, peak_period, top_emoji
         )
-        await self._send_with_format(event, templates)
+        await self._send_with_format(event, templates, image_bytes)
 
     async def _handle_sonaroff(self, event):
         scope, _ = self._get_scope(event)

@@ -40,6 +40,83 @@ class Analyzer:
         min_msg = self._min_messages()
         return [u for u in users if self._get_global_count(u) >= min_msg]
 
+    def _get_profile_cached(self, uid, cache=None):
+        if cache is not None and uid in cache:
+            return cache[uid]
+        prof = {
+            "timing": self.storage.get(f"sonar:profile:{uid}:timing", {}),
+            "emoji": self.storage.get(f"sonar:profile:{uid}:emoji", {}),
+            "vocab": self.storage.get(f"sonar:profile:{uid}:vocab", {}),
+            "length": self.storage.get(f"sonar:profile:{uid}:length", {"total": 0, "count": 0}),
+        }
+        if cache is not None:
+            cache[uid] = prof
+        return prof
+
+    def _load_scope_snapshot(self, scope, profile_cache=None):
+        users = list(self.storage.get(f"{scope}:users", {}).keys())
+        profiles = {}
+        interact = {}
+        presence = {}
+        for uid in users:
+            profiles[uid] = self._get_profile_cached(uid, profile_cache)
+            interact[uid] = self.storage.get(f"{scope}:interact:{uid}", {})
+            presence[uid] = self.storage.get(f"{scope}:presence:{uid}", 0)
+        cooccur = self.storage.get(f"{scope}:cooccur", {}) if users else {}
+        return {
+            "users": users,
+            "profiles": profiles,
+            "interact": interact,
+            "presence": presence,
+            "cooccur": cooccur,
+        }
+
+    def get_snapshot(self, scope):
+        return self._load_scope_snapshot(scope)
+
+    def _all_scopes(self):
+        scopes = set()
+        for k in self.storage.keys():
+            if k.startswith("sonar:") and k.endswith(":users"):
+                parts = k.rsplit(":users", 1)[0]
+                if parts.startswith("sonar:") and parts.count(":") >= 2:
+                    scopes.add(parts)
+        return scopes
+
+    @staticmethod
+    def _cosine_or_neutral(a, b):
+        if not a and not b:
+            return 0.5
+        return Analyzer.cosine_sim(a, b)
+
+    @staticmethod
+    def _behavior_sim(t, e, v):
+        return t * 0.35 + e * 0.25 + v * 0.40
+
+    def detail_from_snapshot(self, snap, uid):
+        prof = snap["profiles"].get(uid)
+        if prof is None:
+            return None
+        timing = prof["timing"]
+        emoji = prof["emoji"]
+        vocab = prof["vocab"]
+        length = prof["length"]
+        active = sorted(timing.items(), key=lambda x: x[1], reverse=True)
+        peak = [h for h, _ in active[:3]]
+        count = length.get("count", 0)
+        avg = round(length["total"] / count, 1) if count > 0 else 0
+        interact = snap["interact"].get(uid, {})
+        return {
+            "message_count": count,
+            "avg_length": avg,
+            "peak_hours": peak,
+            "top_emoji": sorted(emoji.items(), key=lambda x: x[1], reverse=True)[:5],
+            "top_vocab": sorted(vocab.items(), key=lambda x: x[1], reverse=True)[:5],
+            "interact_count": sum(interact.values()),
+            "interact_targets": len(interact),
+            "presence": snap["presence"].get(uid, 0),
+        }
+
     @staticmethod
     def jaccard(set_a, set_b):
         if not set_a and not set_b:
@@ -149,30 +226,66 @@ class Analyzer:
 
     def compute_distance_matrix(self, scope, force=False):
         cache_key = f"{scope}:cache"
-        cached = self.storage.get(cache_key)
-        if cached and not force:
-            cached_time = cached.get("timestamp", 0)
-            interval = self.config.get("update_interval", 3600)
-            if time.time() - cached_time < interval:
-                return cached
+        if not force:
+            cached = self.storage.get(cache_key)
+            if cached:
+                interval = self.config.get("update_interval", 3600)
+                if time.time() - cached.get("timestamp", 0) < interval:
+                    return cached
 
-        users = self._eligible_users(scope)
+        snap = self._load_scope_snapshot(scope)
+        min_msg = self._min_messages()
+        users = [u for u in snap["users"]
+                 if snap["profiles"][u]["length"].get("count", 0) >= min_msg]
         if len(users) < 2:
             return None
 
         weights = self._default_weights()
-        max_interact = self._compute_max_interact(scope, users)
-        max_cooccur = self._compute_max_cooccur(scope, users)
+        total_w = sum(weights.values()) or 1.0
+        profiles = snap["profiles"]
+        interact = snap["interact"]
+        cooccur = snap["cooccur"]
+
+        max_interact = 1.0
+        for ia in interact.values():
+            if ia:
+                m = max(ia.values())
+                if m > max_interact:
+                    max_interact = m
+        max_cooccur = max(max(cooccur.values(), default=0), 1)
+
+        cos = self._cosine_or_neutral
         matrix = {}
         scores_map = {}
+        nu = len(users)
+        for i in range(nu):
+            ua = users[i]
+            pa = profiles[ua]
+            ia = interact[ua]
+            ta, ea, va = pa["timing"], pa["emoji"], pa["vocab"]
+            for j in range(i + 1, nu):
+                ub = users[j]
+                pb = profiles[ub]
+                scores = {
+                    "timing": cos(ta, pb["timing"]),
+                    "emoji": cos(ea, pb["emoji"]),
+                    "vocab": cos(va, pb["vocab"]),
+                }
+                a_to_b = ia.get(ub, 0)
+                b_to_a = interact[ub].get(ua, 0)
+                ti = a_to_b + b_to_a
+                scores["interaction"] = min(ti / max_interact, 1.0) if ti else 0.0
+                co = cooccur.get(f"{ua}|{ub}", 0)
+                scores["cooccurrence"] = min(co / max_cooccur, 1.0) if co else 0.0
 
-        for i in range(len(users)):
-            for j in range(i + 1, len(users)):
-                dist, scores = self.compute_pair_distance(scope, users[i], users[j], weights, max_interact, max_cooccur)
-                matrix[f"{users[i]}|{users[j]}"] = dist
-                matrix[f"{users[j]}|{users[i]}"] = dist
-                scores_map[f"{users[i]}|{users[j]}"] = scores
-                scores_map[f"{users[j]}|{users[i]}"] = scores
+                dist = 0.0
+                for dim, w in weights.items():
+                    dist += (w / total_w) * (1.0 - scores.get(dim, 0))
+                key = f"{ua}|{ub}"
+                matrix[key] = dist
+                matrix[f"{ub}|{ua}"] = dist
+                scores_map[key] = scores
+                scores_map[f"{ub}|{ua}"] = scores
 
         result = {
             "timestamp": time.time(),
@@ -239,81 +352,71 @@ class Analyzer:
         return islands
 
     def find_parallel_universe(self, scope, user_id):
-        result_local = self._find_parallel_in_scope(scope, user_id)
+        profile_cache = {}
+        local = None
+        if scope:
+            local = self._find_parallel_in_scope(scope, user_id, profile_cache)
 
-        results_cross = []
-        all_keys = self.storage.keys()
-        all_scopes = set()
-        for k in all_keys:
-            if k.startswith("sonar:") and k.endswith(":users"):
-                parts = k.rsplit(":users", 1)[0]
-                if parts != scope and parts.startswith("sonar:") and parts.count(":") >= 2:
-                    all_scopes.add(parts)
+        cross = []
+        for other_scope in self._all_scopes():
+            if other_scope == scope:
+                continue
+            match = self._find_parallel_in_scope(other_scope, user_id, profile_cache)
+            if match:
+                match["scope"] = other_scope
+                cross.append(match)
 
-        for other_scope in all_scopes:
-            cross = self._find_parallel_in_scope(other_scope, user_id)
-            if cross:
-                cross["scope"] = other_scope
-                results_cross.append(cross)
-
-        results_cross.sort(key=lambda x: x["similarity"], reverse=True)
         seen = {}
-        for item in results_cross:
+        for item in cross:
             uid = item["user_id"]
             if uid not in seen or item["similarity"] > seen[uid]["similarity"]:
                 seen[uid] = item
         top_cross = sorted(seen.values(), key=lambda x: x["similarity"], reverse=True)[:3]
 
         return {
-            "local": result_local,
+            "local": local,
             "cross_scope": top_cross,
         }
 
-    def _find_parallel_in_scope(self, scope, user_id):
-        data = self.compute_distance_matrix(scope)
-        if not data or user_id not in data["users"]:
+    def _find_parallel_in_scope(self, scope, user_id, profile_cache=None):
+        snap = self._load_scope_snapshot(scope, profile_cache)
+        users = snap["users"]
+        if user_id not in users:
             return None
 
-        users = data["users"]
-        matrix = data["matrix"]
-        scores_map = data["scores"]
-
-        interact = self.storage.get(f"{scope}:interact:{user_id}", {})
-        cooccur = self.storage.get(f"{scope}:cooccur", {})
+        my_interact = snap["interact"].get(user_id, {})
+        cooccur = snap["cooccur"]
+        my_prof = snap["profiles"][user_id]
+        my_timing = my_prof["timing"]
+        my_emoji = my_prof["emoji"]
+        my_vocab = my_prof["vocab"]
+        cos = self._cosine_or_neutral
 
         best = None
-        best_behavior_sim = -1.0
-
+        best_sim = -1.0
         for other in users:
             if other == user_id:
                 continue
-            pair_key = f"{user_id}|{other}"
-
-            has_interaction = (
-                interact.get(other, 0) > 0
-                or self.storage.get(f"{scope}:interact:{other}", {}).get(user_id, 0) > 0
-            )
-            has_cooccur = (
-                cooccur.get(pair_key, 0) > 0
-                or cooccur.get(f"{other}|{user_id}", 0) > 0
-            )
-
-            if has_interaction or has_cooccur:
+            if my_interact.get(other, 0) > 0:
+                continue
+            if snap["interact"].get(other, {}).get(user_id, 0) > 0:
+                continue
+            if (cooccur.get(f"{user_id}|{other}", 0) > 0
+                    or cooccur.get(f"{other}|{user_id}", 0) > 0):
                 continue
 
-            scores = scores_map.get(pair_key, {})
-            behavior_sim = (
-                scores.get("timing", 0) * 0.35
-                + scores.get("emoji", 0) * 0.25
-                + scores.get("vocab", 0) * 0.40
-            )
+            op = snap["profiles"][other]
+            t = cos(my_timing, op["timing"])
+            e = cos(my_emoji, op["emoji"])
+            v = cos(my_vocab, op["vocab"])
+            sim = self._behavior_sim(t, e, v)
 
-            if behavior_sim > best_behavior_sim:
-                best_behavior_sim = behavior_sim
+            if sim > best_sim:
+                best_sim = sim
                 best = {
                     "user_id": other,
-                    "similarity": round(behavior_sim, 3),
-                    "scores": scores,
+                    "similarity": round(sim, 3),
+                    "scores": {"timing": t, "emoji": e, "vocab": v},
                 }
 
         return best

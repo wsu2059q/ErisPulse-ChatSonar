@@ -26,6 +26,7 @@ class Main(BaseModule):
         return ModuleLoadStrategy(
             lazy_load=False,
             priority=50,
+            depends=["Takumi"],
         )
 
     async def on_load(self, event):
@@ -67,11 +68,11 @@ class Main(BaseModule):
     <meta charset="utf-8">
     <title>ChatSonar</title>
     <style>
-        body { background: #0a0a1a; color: #aac; font-family: sans-serif; margin: 40px; }
-        h1 { color: #00ff88; }
-        a { color: #00bbff; }
-        .api-list { background: #111; padding: 20px; border-radius: 8px; }
-        .api-list code { color: #00ff88; }
+        body { background: #f4f6fb; color: #1f2937; font-family: sans-serif; margin: 40px; }
+        h1 { color: #4f7cff; }
+        a { color: #8b5cf6; }
+        .api-list { background: #ffffff; padding: 20px; border-radius: 8px; border: 1px solid rgba(79,124,255,0.14); }
+        .api-list code { color: #ec4899; }
     </style>
 </head>
 <body>
@@ -150,7 +151,6 @@ class Main(BaseModule):
                 "distance_threshold": 0.6,
                 "top_vocab_count": 100,
                 "cache_enabled": True,
-                "density_bandwidth": 0.15,
                 "cooccur_window": 300,
                 "radar_distance_scale": 1.2,
                 "radar_max_radius": 1.1,

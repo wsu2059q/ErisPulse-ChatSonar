@@ -1,540 +1,636 @@
-import io
+import html
 import math
-import os
+import random
 import re
-import warnings
-import numpy as np
-import matplotlib
-matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
-from matplotlib.colors import LinearSegmentedColormap
-
-warnings.filterwarnings("ignore", category=UserWarning, module="matplotlib")
+import time
+import zlib
 
 
 class Visualizer:
+    BLUE = "#0a84ff"
+    PINK = "#ff375f"
+    VIOLET = "#bf5af2"
+    GREEN = "#30d158"
+    ORANGE = "#ff9f0a"
+
     SONAR_COLORS = [
-        "#00ff88", "#00bbff", "#ffaa00", "#ff4466",
-        "#aa66ff", "#00ffcc", "#ff8844", "#88ff44",
+        "#0a84ff", "#ff375f", "#bf5af2", "#30d158",
+        "#ff9f0a", "#5e5ce6", "#64d2ff", "#ff453a",
     ]
+    RING_COLORS = {"inner": "#0a84ff", "middle": "#bf5af2", "outer": "#ff375f", "dark": "#8e8e93"}
 
     _EMOJI_RE = re.compile(
         "["
-        "\U0001F600-\U0001F64F"
-        "\U0001F300-\U0001F5FF"
-        "\U0001F680-\U0001F6FF"
-        "\U0001F1E0-\U0001F1FF"
-        "\U00002702-\U000027B0"
-        "\U000024C2-\U0001F251"
-        "\U0001f926-\U0001f937"
-        "\U00010000-\U0010ffff"
-        "\u2640-\u2642"
-        "\u2600-\u2B55"
-        "\u200d"
-        "\u23cf"
-        "\u23e9"
-        "\u231a"
-        "\ufe0f"
-        "\u3030"
-        "\u20e3"
-        "\uFE0F"
-        "]+",
+        "\U0001F600-\U0001F64F\U0001F300-\U0001F5FF\U0001F680-\U0001F6FF"
+        "\U0001F1E0-\U0001F1FF\U00002702-\U000027B0\U000024C2-\U0001F251"
+        "\U0001f926-\U0001f937\U00010000-\U0010ffff\u2640-\u2642\u2600-\u2B55"
+        "\u200d\u23cf\u23e9\u231a\ufe0f\u3030\u20e3\uFE0F]+",
         flags=re.UNICODE,
     )
 
-    _font_initialized = False
+    CARD_WIDTH = 920
+    MAP_SVG = 720
+    RADAR_SVG = 420
+    _PAGE_PAD = 40
+    _CARD_PAD = 28
+    _CARD_GAP = 14
+
+    _CSS_TPL = """
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+        font-family: "Noto Sans SC", "Source Han Sans SC", sans-serif;
+        background: __PAGE__; color: __INK__; -webkit-font-smoothing: antialiased;
+        padding: 40px;
+    }
+    .card {
+        background: __CARD__; border-radius: 18px; padding: 28px 30px;
+        margin-bottom: 14px;
+    }
+    .last { margin-bottom: 0; }
+    .head { margin-bottom: 4px; }
+    .title { font-size: 27px; font-weight: 700; color: __INK__; letter-spacing: -0.4px; }
+    .subtitle { font-size: 14px; color: __SUB__; margin-top: 4px; }
+    .divider { height: 1px; background: __SEP__; margin: 20px 0; }
+    .chips { display: flex; flex-wrap: wrap; gap: 10px; }
+    .chip { padding: 8px 14px; border-radius: 9px; font-size: 13px; background: __SOFT__; color: __INK__; }
+    .chip b { color: __BLUE__; font-weight: 600; margin-right: 4px; }
+    .chip.pink b { color: __PINK__; }
+    .chip.violet b { color: __VIOLET__; }
+    .chip.green b { color: __GREEN__; }
+    .map-wrap { display: flex; justify-content: center; }
+    .stage { position: relative; }
+    .stage > svg { position: absolute; left: 0; top: 0; }
+    .lbl {
+        position: absolute; transform: translate(-50%, -50%);
+        background: __LBLBG__; padding: 2px 7px; border-radius: 5px;
+        font-size: 12px; font-weight: 600; white-space: nowrap;
+        border: 1px solid; line-height: 1.4;
+    }
+    .ring-tag {
+        position: absolute; transform: translate(-50%, -50%);
+        font-size: 11px; color: __SUB__; background: __LBLBG__; padding: 0 4px;
+    }
+    .section-label {
+        font-size: 12px; font-weight: 600; color: __SUB__;
+        letter-spacing: 0.8px; margin: 4px 0 12px; text-transform: uppercase;
+    }
+    .island-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .island { border-radius: 12px; padding: 14px 16px; background: __SOFT__; border-left: 3px solid var(--c, __BLUE__); }
+    .island .name { font-size: 15px; font-weight: 600; color: __INK__; }
+    .island .meta { font-size: 12px; color: __SUB__; margin-top: 3px; }
+    .island .members { font-size: 12.5px; color: __INK__; margin-top: 6px; line-height: 1.6; opacity: 0.72; }
+    .lone { border-radius: 12px; padding: 14px 16px; background: __SOFT__; font-size: 13px; color: __SUB__; line-height: 1.7; }
+    .lone b { color: __INK__; }
+    .foot { font-size: 12.5px; color: __SUB__; text-align: center; margin-top: 14px; }
+    .foot code { color: __BLUE__; background: __SOFT__; padding: 2px 7px; border-radius: 5px; font-family: "Source Code Pro", monospace; }
+    .pair-row { display: flex; align-items: center; justify-content: space-between; }
+    .pair-names { font-size: 22px; font-weight: 600; color: __INK__; }
+    .pair-names .sep { color: var(--dc, __BLUE__); margin: 0 10px; }
+    .dist-badge { text-align: center; padding: 8px 18px; border-radius: 12px; background: __SOFT__; border: 1px solid var(--dc, __BLUE__); }
+    .dist-badge .v { font-size: 28px; font-weight: 700; color: var(--dc, __BLUE__); }
+    .dist-badge .l { font-size: 12px; color: __SUB__; margin-top: 1px; }
+    .radar-wrap { display: flex; justify-content: center; }
+    .dim-grid { display: flex; flex-direction: column; gap: 14px; }
+    .dim { display: flex; align-items: center; gap: 12px; }
+    .dim .nm { width: 100px; font-size: 14px; color: __INK__; }
+    .bar { flex: 1; height: 8px; border-radius: 5px; background: __SEP__; overflow: hidden; }
+    .bar > i { display: block; height: 100%; border-radius: 5px; background: var(--c, __BLUE__); }
+    .dim .pct { width: 44px; text-align: right; font-size: 14px; font-weight: 600; color: __INK__; font-variant-numeric: tabular-nums; }
+    .kv { display: flex; gap: 10px; flex-wrap: wrap; }
+    .pill { padding: 7px 13px; border-radius: 8px; font-size: 13px; background: __SOFT__; color: __INK__; }
+    .pill b { color: __BLUE__; font-weight: 600; }
+    .tags { display: flex; flex-wrap: wrap; gap: 6px; }
+    .tag { padding: 4px 12px; border-radius: 7px; font-size: 13px; color: __BLUE__; background: __SOFTTAG__; }
+    .note { font-size: 13px; color: __SUB__; }
+    .note b { color: __BLUE__; }
+    .empty { font-size: 15px; color: __SUB__; text-align: center; padding: 40px 20px; border-radius: 14px; background: __SOFT__; }
+    """
 
     @classmethod
     def _strip_emoji(cls, text):
         return cls._EMOJI_RE.sub("", text).strip() or text
 
+    @staticmethod
+    def _esc(text):
+        return html.escape(str(text))
+
     def __init__(self, sdk, config):
         self.sdk = sdk
         self.logger = sdk.logger.get_child("ChatSonar.Visualizer")
         self.config = config
-        self._font_prop = None
-        if not Visualizer._font_initialized:
-            Visualizer._font_initialized = True
-            self._setup_fonts()
+        self._takumi_inst = None
 
-    @classmethod
-    def _setup_fonts(cls):
-        font_dir = os.path.join(os.path.dirname(__file__), "fonts")
-        bundled = os.path.join(font_dir, "SourceHanSansSC-Regular.otf")
-        if os.path.exists(bundled):
+    @property
+    def takumi(self):
+        if self._takumi_inst is None:
+            inst = None
             try:
-                fm.fontManager.addfont(bundled)
-                prop = fm.FontProperties(fname=bundled)
-                plt.rcParams["font.sans-serif"] = [prop.get_name()] + plt.rcParams.get("font.sans-serif", [])
-            except Exception as e:
-                warnings.warn(f"Failed to load bundled font: {e}")
+                inst = self.sdk.module.get("Takumi")
+            except Exception:
+                inst = None
+            if inst is None:
+                inst = getattr(self.sdk, "Takumi", None)
+            self._takumi_inst = inst
+        return self._takumi_inst
 
-        candidates = [
-            "Microsoft YaHei", "SimHei", "PingFang SC",
-            "WenQuanYi Micro Hei", "Noto Sans CJK SC",
-            "STHeiti", "Arial Unicode MS",
-        ]
-        available = {f.name for f in fm.fontManager.ttflist}
-        for name in candidates:
-            if name in available:
-                plt.rcParams["font.sans-serif"] = [name]
-                break
-        plt.rcParams["axes.unicode_minus"] = False
+    def _theme(self):
+        mode = self.config.get("theme", "auto")
+        if mode == "auto":
+            offset = self.config.get("utc_offset", 8)
+            hour = int((time.time() / 3600 + offset) % 24)
+            mode = "dark" if (hour >= 19 or hour < 7) else "light"
+        if mode == "dark":
+            return {"page": "#000000", "card": "#1c1c1e", "ink": "#f5f5f7", "sub": "#8e8e93",
+                    "sep": "#38383a", "soft": "#2c2c2e", "softtag": "rgba(10,132,255,0.18)",
+                    "lbl": "#1c1c1e", "dark": True}
+        return {"page": "#f5f5f7", "card": "#ffffff", "ink": "#1d1d1f", "sub": "#6e6e73",
+                "sep": "#e5e5ea", "soft": "#f5f5f7", "softtag": "#eef4ff",
+                "lbl": "#ffffff", "dark": False}
 
-    def _mds_2d(self, users, matrix):
-        n = len(users)
-        if n < 2:
-            return {users[0]: (0.0, 0.0)} if n == 1 else {}
+    def _css(self):
+        t = self._theme()
+        css = (self._CSS_TPL
+               .replace("__PAGE__", t["page"]).replace("__CARD__", t["card"])
+               .replace("__INK__", t["ink"]).replace("__SUB__", t["sub"])
+               .replace("__SEP__", t["sep"]).replace("__SOFT__", t["soft"])
+               .replace("__SOFTTAG__", t["softtag"]).replace("__LBLBG__", t["lbl"])
+               .replace("__BLUE__", self.BLUE).replace("__PINK__", self.PINK)
+               .replace("__VIOLET__", self.VIOLET).replace("__GREEN__", self.GREEN))
+        return css, t
 
-        dist_matrix = np.zeros((n, n))
-        for i in range(n):
-            for j in range(n):
-                if i == j:
-                    continue
-                key = f"{users[i]}|{users[j]}"
-                dist_matrix[i][j] = matrix.get(key, 1.0)
-
-        n_components = min(2, n - 1)
-        H = np.eye(n) - np.ones((n, n)) / n
-        B = -0.5 * H @ (dist_matrix ** 2) @ H
-
+    def _render(self, body_html, height):
+        takumi = self.takumi
+        if takumi is None or not hasattr(takumi, "render_html"):
+            self.logger.error("Takumi 模块不可用，无法渲染图片")
+            return None
+        css, t = self._css()
         try:
-            eigenvalues, eigenvectors = np.linalg.eigh(B)
-            idx = np.argsort(eigenvalues)[::-1]
-            eigenvalues = eigenvalues[idx]
-            eigenvectors = eigenvectors[:, idx]
-
-            positive = eigenvalues > 0
-            eigenvalues_pos = eigenvalues[positive][:n_components]
-            eigenvectors_pos = eigenvectors[:, positive][:, :n_components]
-
-            coords = eigenvectors_pos * np.sqrt(eigenvalues_pos)
-        except Exception:
-            self.logger.warning("MDS failed, using random layout")
-            coords = np.random.RandomState(42).rand(n, n_components) * 2 - 1
-
-        if n_components == 1:
-            coords = np.column_stack([coords, np.zeros(n)])
-
-        max_range = max(coords[:, 0].max() - coords[:, 0].min(),
-                        coords[:, 1].max() - coords[:, 1].min(), 0.01)
-        coords = (coords - coords.mean(axis=0)) / max_range
-
-        result = {}
-        for i, uid in enumerate(users):
-            result[uid] = (float(coords[i, 0]), float(coords[i, 1]))
-        return result
-
-    def generate_sonar(self, users, matrix, islands, nicknames=None, msg_counts=None):
-        if not users or len(users) < 2:
+            return takumi.render_html(
+                body_html, stylesheets=[css],
+                width=self.CARD_WIDTH, height=height, lang="zh-CN",
+            )
+        except Exception as e:
+            self.logger.error(f"Takumi 渲染失败: {e}")
             return None
 
-        if nicknames is None:
-            nicknames = {}
-        if msg_counts is None:
-            msg_counts = {}
+    @staticmethod
+    def _dist_color(d):
+        if d < 0.3:
+            return "#0a84ff"
+        if d < 0.6:
+            return "#bf5af2"
+        if d < 0.8:
+            return "#ff375f"
+        return "#8e8e93"
 
-        coords = self._mds_2d(users, matrix)
+    def _head(self, title, subtitle):
+        return (f"<div class='head'><div class='title'>{self._esc(title)}</div>"
+                f"<div class='subtitle'>{self._esc(subtitle)}</div></div>")
 
-        fig, ax = plt.subplots(figsize=(12, 12), facecolor="#0a0a1a", dpi=200)
-        ax.set_facecolor("#0a0a1a")
+    def _card(self, inner, last=False):
+        return f"<div class='card{' last' if last else ''}'>{inner}</div>"
 
-        # 添加主标题（中英双语）
-        fig.suptitle("群聊社交声呐图 / Group Chat Social Sonar Map", 
-                     fontsize=16, color="#00ff88", fontweight="bold", y=0.98)
-        
-        # 添加说明文本框
-        info_text = (
-            "图表说明 / Info:\n"
-            "• 每个点代表一个群成员 / Each dot = one member\n"
-            "• 距离越近表示关系越亲密 / Closer = closer relationship\n"
-            "• 相同颜色属于同一社交圈 / Same color = same social circle\n"
-            "• 连线表示有直接互动 / Lines = direct interaction"
-        )
-        ax.text(0.02, 0.98, info_text, transform=ax.transAxes,
-                fontsize=9, color="#aaaacc", verticalalignment='top',
-                bbox=dict(boxstyle='round,pad=0.8', facecolor='#1a1a2e', 
-                         edgecolor='#00ff88', alpha=0.8))
+    def _cards_height(self, inner_heights, footer=0):
+        n = len(inner_heights)
+        return (self._PAGE_PAD * 2 + n * self._CARD_PAD * 2
+                + sum(inner_heights) + max(0, n - 1) * self._CARD_GAP + footer + 24)
 
-        # 绘制同心圆网格（距离参考）
-        for r in [0.3, 0.6, 0.9, 1.2]:
-            circle = plt.Circle((0, 0), r, fill=False, color="#1a3a4a",
-                                linewidth=1.0, linestyle="--", alpha=0.4)
-            ax.add_patch(circle)
-        
-        # 添加距离标签
-        for r, label in [(0.3, "0.3"), (0.6, "0.6"), (0.9, "0.9")]:
-            ax.text(r, 0.02, label, fontsize=7, color="#556666", ha='center')
+    @staticmethod
+    def _rects_overlap(ax, ay, aw, ah, bx, by, bw, bh):
+        return not (ax + aw <= bx or bx + bw <= ax or ay + ah <= by or by + bh <= ay)
 
-        # 绘制径向线
-        for angle in range(0, 360, 45):
-            rad = math.radians(angle)
-            ax.plot([0, 1.3 * math.cos(rad)], [0, 1.3 * math.sin(rad)],
-                    color="#1a3a4a", linewidth=0.6, alpha=0.3)
+    def _place_labels(self, ordered, node_px, label_of, max_labels=22, char_w=9, pad=16):
+        placed = []
+        out = {}
+        offsets = [(26, -16), (26, 16), (-26, -16), (-26, 16),
+                   (0, -28), (0, 28), (32, 0), (-32, 0)]
+        for uid in ordered:
+            if len(out) >= max_labels:
+                break
+            nx, ny = node_px[uid]
+            text = label_of.get(uid)
+            if not text:
+                continue
+            w = min(len(text), 8) * char_w + pad
+            h = 20
+            for ox, oy in offsets:
+                cx, cy = nx + ox, ny + oy
+                bx, by = cx - w / 2, cy - h / 2
+                ok = True
+                for (px, py, pw, ph) in placed:
+                    if self._rects_overlap(bx, by, w, h, px, py, pw, ph):
+                        ok = False
+                        break
+                if ok:
+                    placed.append((bx, by, w, h))
+                    out[uid] = (cx, cy, text)
+                    break
+        return out
 
-        # 密度热力场（数据驱动，纯numpy高斯叠加）
-        bandwidth = self.config.get("density_bandwidth", 0.15)
-        grid_res = 200
-        xg = np.linspace(-1.5, 1.5, grid_res)
-        yg = np.linspace(-1.5, 1.5, grid_res)
-        X, Y = np.meshgrid(xg, yg)
-        density = np.zeros_like(X)
+    @staticmethod
+    def _label_div(cx, cy, text, color):
+        return (f"<div class='lbl' style='left:{cx:.1f}px;top:{cy:.1f}px;"
+                f"border-color:{color};color:{color}'>{text}</div>")
 
-        for uid in users:
-            ux, uy = coords[uid]
-            density += np.exp(-((X - ux) ** 2 + (Y - uy) ** 2) / (2 * bandwidth ** 2))
+    @staticmethod
+    def _ring_tag(cx, cy, text):
+        return f"<div class='ring-tag' style='left:{cx:.1f}px;top:{cy:.1f}px'>{text}</div>"
 
-        density /= max(density.max(), 1e-10)
+    # ------------------------------------------------------------------ layout
+    def _force_layout(self, users, matrix):
+        n = len(users)
+        if n == 0:
+            return {}
+        if n == 1:
+            return {users[0]: (0.0, 0.0)}
+        pos = {}
+        for i, u in enumerate(users):
+            ang = 2 * math.pi * i / n
+            pos[u] = [math.cos(ang) * 0.6, math.sin(ang) * 0.6]
+        threshold = self.config.get("distance_threshold", 0.6)
+        gravity, rep_k, temp = 0.045, 0.17, 0.55
+        for _ in range(480):
+            disp = {u: [0.0, 0.0] for u in users}
+            for u in users:
+                disp[u][0] -= pos[u][0] * gravity
+                disp[u][1] -= pos[u][1] * gravity
+            for i in range(n):
+                ui = users[i]
+                xi, yi = pos[ui]
+                for j in range(i + 1, n):
+                    uj = users[j]
+                    dx, dy = xi - pos[uj][0], yi - pos[uj][1]
+                    d2 = dx * dx + dy * dy
+                    if d2 < 1e-6:
+                        dx, dy, d2 = 1e-3, 1e-3, 2e-6
+                    d = math.sqrt(d2)
+                    rep = rep_k / d2
+                    fx, fy = dx / d * rep, dy / d * rep
+                    disp[ui][0] += fx; disp[ui][1] += fy
+                    disp[uj][0] -= fx; disp[uj][1] -= fy
+            for i in range(n):
+                ui = users[i]
+                xi, yi = pos[ui]
+                for j in range(i + 1, n):
+                    uj = users[j]
+                    dist = matrix.get(f"{ui}|{uj}", 1.0)
+                    if dist >= threshold:
+                        continue
+                    dx, dy = xi - pos[uj][0], yi - pos[uj][1]
+                    d = math.hypot(dx, dy) or 1e-6
+                    rest = 0.32 + (dist / threshold) * 1.05
+                    force = (d - rest) * 0.16
+                    fx, fy = dx / d * force, dy / d * force
+                    disp[ui][0] -= fx; disp[ui][1] -= fy
+                    disp[uj][0] += fx; disp[uj][1] += fy
+            for u in users:
+                dx, dy = disp[u]
+                mag = math.hypot(dx, dy)
+                if mag > 1e-6:
+                    lim = min(mag, temp)
+                    pos[u][0] += dx / mag * lim
+                    pos[u][1] += dy / mag * lim
+            temp = max(temp * 0.985, 0.01)
+        xs = [pos[u][0] for u in users]
+        ys = [pos[u][1] for u in users]
+        cx = (min(xs) + max(xs)) / 2
+        cy = (min(ys) + max(ys)) / 2
+        span = max(max(xs) - min(xs), max(ys) - min(ys), 1e-6)
+        return {u: ((pos[u][0] - cx) / span, (pos[u][1] - cy) / span) for u in users}
 
-        sonar_heat_cmap = LinearSegmentedColormap.from_list("sonar_heat", [
-            (0, 0, 0, 0),
-            (0, 0.4, 0.27, 0.15),
-            (0, 1, 0.53, 0.35),
-        ])
-        ax.imshow(density, extent=[-1.5, 1.5, -1.5, 1.5], origin="lower",
-                  cmap=sonar_heat_cmap, aspect="auto", zorder=1)
-
-        # 岛屿映射
+    def _svg_sonar(self, users, matrix, islands, msg_counts, node_px, t):
         island_map = {}
         for idx, island in enumerate(islands):
             color = self.SONAR_COLORS[idx % len(self.SONAR_COLORS)]
             for uid in island["members"]:
                 island_map[uid] = (idx, color)
-
-        default_color = "#446666"
+        default_color = "#8e8e93"
         threshold = self.config.get("distance_threshold", 0.6)
-
-        # 绘制连线（在底层）
-        drawn_pairs = set()
+        max_count = max(max(msg_counts.values()) if msg_counts else 1, 1)
+        size = self.MAP_SVG
+        cxy = size / 2
+        radius = size / 2 - 96
+        sep = t["sep"]
+        node_stroke = t["card"]
+        svg = [f"<svg width='{size}' height='{size}' viewBox='0 0 {size} {size}' xmlns='http://www.w3.org/2000/svg'>"]
+        for r_frac in (0.3, 0.6, 0.9):
+            svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='{radius * r_frac:.1f}' fill='none' stroke='{sep}' stroke-width='1'/>")
+        svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='3' fill='{sep}'/>")
         for i in range(len(users)):
             for j in range(i + 1, len(users)):
-                key = f"{users[i]}|{users[j]}"
-                dist = matrix.get(key, 1.0)
-                if dist < threshold:
-                    x1, y1 = coords[users[i]]
-                    x2, y2 = coords[users[j]]
-                    alpha = max(0.15, min(0.7, (1.0 - dist) * 0.9))
-                    c1 = island_map.get(users[i], (0, default_color))[1]
-                    c2 = island_map.get(users[j], (0, default_color))[1]
-                    line_color = c1 if c1 == c2 else "#335555"
-                    ax.plot([x1, x2], [y1, y2], color=line_color,
-                            linewidth=2.0, alpha=alpha, zorder=3)
-
-        # 绘制节点和标签（在上层）
+                dist = matrix.get(f"{users[i]}|{users[j]}", 1.0)
+                if dist >= threshold:
+                    continue
+                x1, y1 = node_px[users[i]]
+                x2, y2 = node_px[users[j]]
+                alpha = max(0.12, min(0.6, (1.0 - dist) * 0.85))
+                ic1 = island_map.get(users[i], (0, default_color))[1]
+                ic2 = island_map.get(users[j], (0, default_color))[1]
+                lc = ic1 if ic1 == ic2 else t["sub"]
+                svg.append(f"<line x1='{x1:.1f}' y1='{y1:.1f}' x2='{x2:.1f}' y2='{y2:.1f}' stroke='{lc}' stroke-width='1.6' opacity='{alpha:.2f}'/>")
         for uid in users:
-            x, y = coords[uid]
-            info = island_map.get(uid)
-            color = info[1] if info else default_color
-            
-            # 获取消息数量用于调整节点大小 (这里保持默认或根据实际数据扩展)
-            msg_count = msg_counts.get(uid, 10)
+            x, y = node_px[uid]
+            color = island_map.get(uid, (0, default_color))[1]
+            r_node = 8 + (msg_counts.get(uid, 1) / max_count) * 14
+            svg.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{r_node:.1f}' fill='{color}' stroke='{node_stroke}' stroke-width='2'/>")
+        svg.append("</svg>")
+        return "".join(svg), island_map, cxy, radius
 
-            # 节点光晕效果（增强可见性）
-            for glow_size in [0.08, 0.05, 0.03]:
-                glow = plt.Circle((x, y), glow_size, color=color, alpha=0.15)
-                ax.add_patch(glow)
-
-            # 主节点
-            ax.scatter(x, y, s=120 + msg_count * 3, c=color,
-                       alpha=0.95, edgecolors="white", linewidths=1.0, zorder=5)
-
-            # 智能标签位置（根据象限调整偏移方向）
-            offset_x = 12 if x >= 0 else -12
-            offset_y = 12 if y >= 0 else -12
-            
-            # 标签背景框（避免与线条重叠）
-            label = self._strip_emoji(nicknames.get(uid, uid))
-            bbox_props = dict(boxstyle='round,pad=0.4', facecolor='#0a0a1a', 
-                             edgecolor=color, alpha=0.7, linewidth=0.8)
-            ax.annotate(label, (x, y), textcoords="offset points",
-                        xytext=(offset_x, offset_y), fontsize=10, 
-                        color=color, alpha=0.95, fontweight="bold",
-                        bbox=bbox_props, zorder=6)
-
-        # 添加图例
-        legend_elements = []
-        unique_colors = set()
-        for uid in users:
-            info = island_map.get(uid)
-            if info:
-                color = info[1]
-                if color not in unique_colors:
-                    unique_colors.add(color)
-                    island_idx = info[0]
-                    legend_elements.append(
-                        plt.Line2D([0], [0], marker='o', color='w', 
-                                  markerfacecolor=color, markersize=10,
-                                  label=f'岛屿 {island_idx + 1} / Island {island_idx + 1}',
-                                  alpha=0.9))
-        
-        if len(unique_colors) > 0:
-            legend = ax.legend(handles=legend_elements, loc='lower right',
-                              fontsize=9, facecolor='#0a0a1a',
-                              edgecolor='#1a3a4a', labelcolor='#aaaacc',
-                              framealpha=0.9, title="社交圈 / Social Circles")
-            legend.get_title().set_fontsize(10)
-            legend.get_title().set_color('#00ff88')
-
-        # 底部统计信息
-        total_users = len(users)
-        total_islands = len(islands)
-        stats_text = f"总人数: {total_users} | 岛屿数: {total_islands} | Total: {total_users} members, {total_islands} islands"
-        ax.text(0.5, 0.02, stats_text, transform=ax.transAxes,
-                fontsize=10, color="#00ff88", ha='center',
-                bbox=dict(boxstyle='round,pad=0.6', facecolor='#1a1a2e', 
-                         edgecolor='#00ff88', alpha=0.8))
-
-        ax.set_xlim(-1.6, 1.6)
-        ax.set_ylim(-1.6, 1.6)
-        ax.set_aspect("equal")
-        ax.axis("off")
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=200, bbox_inches="tight",
-                    facecolor="#0a0a1a", edgecolor="none", pad_inches=0.3)
-        plt.close(fig)
-        buf.seek(0)
-        return buf.read()
-
-    def generate_radar_chart(self, scores):
-        dims = ["timing", "emoji", "vocab", "interaction", "cooccurrence"]
-        labels_zh = ["时段重叠", "表情相似", "词汇相似", "直接互动", "共现频率"]
-        labels_en = ["Timing", "Emoji", "Vocab", "Interaction", "Co-occur"]
-        # 中英双语标签
-        labels = [f"{zh}\n{en}" for zh, en in zip(labels_zh, labels_en)]
-        values = [scores.get(d, 0) for d in dims]
-
-        angles = np.linspace(0, 2 * np.pi, len(dims), endpoint=False).tolist()
-        values_plot = values + [values[0]]
-        angles_plot = angles + [angles[0]]
-
-        fig, ax = plt.subplots(figsize=(8, 8), subplot_kw=dict(polar=True),
-                                facecolor="#0a0a1a", dpi=200)
-        ax.set_facecolor("#0a0a1a")
-
-        # 添加标题
-        ax.set_title("亲密度分析 / Intimacy Analysis", 
-                     fontsize=14, color="#00ff88", fontweight="bold", pad=25)
-
-        # 多层填充效果
-        ax.fill(angles_plot, values_plot, color="#00ff88", alpha=0.25, zorder=2)
-        ax.plot(angles_plot, values_plot, color="#00ff88", linewidth=2.5, zorder=3)
-
-        # 在每个维度上显示百分比
-        for angle, val, label in zip(angles, values, labels):
-            # 数值标签
-            ax.annotate(f"{int(val * 100)}%", xy=(angle, val),
-                        textcoords="offset points", xytext=(12, 8),
-                        fontsize=11, color="#00ff88", fontweight="bold",
-                        bbox=dict(boxstyle='round,pad=0.4', facecolor='#0a0a1a', 
-                                 edgecolor='#00ff88', alpha=0.8))
-
-        ax.set_xticks(angles)
-        ax.set_xticklabels(labels, fontsize=9, color="#aaaacc")
-        ax.set_yticks([0.2, 0.4, 0.6, 0.8, 1.0])
-        ax.set_yticklabels(["20%", "40%", "60%", "80%", "100%"],
-                            fontsize=8, color="#556666")
-        ax.set_ylim(0, 1)
-        ax.spines["polar"].set_color("#1a3a4a")
-        ax.grid(color="#1a3a4a", alpha=0.5, linestyle="--")
-
-        # 添加说明文本
-        info_text = (
-            "数值越高表示相似度越高\n"
-            "Higher value = more similar"
-        )
-        ax.text(0.5, 0.02, info_text, transform=ax.transAxes,
-                fontsize=8, color="#aaaacc", ha='center',
-                bbox=dict(boxstyle='round,pad=0.5', facecolor='#1a1a2e', 
-                         edgecolor='#00bbff', alpha=0.7))
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=200, bbox_inches="tight",
-                    facecolor="#0a0a1a", edgecolor="none", pad_inches=0.3)
-        plt.close(fig)
-        buf.seek(0)
-        return buf.read()
-
-    def generate_personal_radar(self, user_id, distances, nicknames=None):
-        if not distances:
-            return None
-        if nicknames is None:
-            nicknames = {}
-
-        sorted_dists = sorted(distances.items(), key=lambda x: x[1]["distance"])
-        others = [uid for uid, _ in sorted_dists]
-
-        if not others:
-            return None
-
-        n = len(others)
-        fig, ax = plt.subplots(figsize=(10, 10), facecolor="#0a0a1a", dpi=200)
-        ax.set_facecolor("#0a0a1a")
-
-        # 添加标题
-        my_name = nicknames.get(user_id, user_id)
-        fig.suptitle(f"{my_name} 的社交雷达 / Social Radar", 
-                     fontsize=15, color="#00ff88", fontweight="bold", y=0.97)
-
-        # 绘制同心圆（距离参考）
-        for r in [0.3, 0.6, 0.9]:
-            circle = plt.Circle((0, 0), r, fill=False, color="#1a3a4a",
-                                linewidth=1.0, linestyle="--", alpha=0.5)
-            ax.add_patch(circle)
-        
-        # 距离标签
-        for r, label_zh, label_en in [(0.3, "内圈", "Inner"), 
-                                       (0.6, "中圈", "Middle"), 
-                                       (0.9, "外圈", "Outer")]:
-            ax.text(r, 0.03, f"{label_zh}/{label_en}", fontsize=7, 
-                   color="#556666", ha='center')
-
-        ring_colors = {0: "#00ff88", 1: "#00bbff", 2: "#ffaa00", 3: "#ff4466"}
-        ring_labels = {
-            0: ("内圈 <0.3", "Inner <0.3"),
-            1: ("中圈 <0.6", "Middle <0.6"),
-            2: ("外圈 <0.8", "Outer <0.8"),
-            3: ("暗区 >0.8", "Dark >0.8")
-        }
-
-        # 绘制用户节点
-        for i, uid in enumerate(others):
-            dist = distances[uid]["distance"]
-            angle = 2 * math.pi * i / n
-            dist_scale = self.config.get("radar_distance_scale", 1.2)
-            max_radius = self.config.get("radar_max_radius", 1.1)
-            radius = min(dist * dist_scale, max_radius)
-            x = radius * math.cos(angle)
-            y = radius * math.sin(angle)
-
-            if dist < 0.3:
-                color = ring_colors[0]
-            elif dist < 0.6:
-                color = ring_colors[1]
-            elif dist < 0.8:
-                color = ring_colors[2]
-            else:
-                color = ring_colors[3]
-
-            # 光晕效果
-            for glow_size in [0.06, 0.04]:
-                glow = plt.Circle((x, y), glow_size, color=color, alpha=0.2)
-                ax.add_patch(glow)
-
-            # 主节点
-            node_size = max(60, 200 * (1.0 - dist))
-            ax.scatter(x, y, s=node_size, c=color, alpha=0.95,
-                       edgecolors="white", linewidths=1.0, zorder=5)
-
-            # 智能标签位置
-            offset_x = 12 if x >= 0 else -12
-            offset_y = 12 if y >= 0 else -12
-            
-            label = self._strip_emoji(nicknames.get(uid, uid))
-            dist_text = f"{label}\n{dist:.2f}"
-            bbox_props = dict(boxstyle='round,pad=0.4', facecolor='#0a0a1a', 
-                             edgecolor=color, alpha=0.75, linewidth=0.8)
-            ax.annotate(dist_text, (x, y), textcoords="offset points",
-                        xytext=(offset_x, offset_y), fontsize=9, 
-                        color=color, alpha=0.95, fontweight="bold",
-                        bbox=bbox_props, zorder=6)
-
-        # 中心用户（自己）
-        ax.scatter(0, 0, s=250, c="#00ff88", marker="*", zorder=10,
-                   edgecolors="white", linewidths=1.5)
-        label_me = self._strip_emoji(nicknames.get(user_id, user_id))
-        ax.annotate(label_me, (0, 0), textcoords="offset points",
-                    xytext=(12, -18), fontsize=11, color="#00ff88",
-                    fontweight="bold",
-                    bbox=dict(boxstyle='round,pad=0.5', facecolor='#0a0a1a', 
-                             edgecolor='#00ff88', alpha=0.8))
-
-        # 图例
-        legend_elements = []
-        for ring_idx, (label_zh, label_en) in ring_labels.items():
-            color = ring_colors[ring_idx]
-            legend_elements.append(
-                plt.Line2D([0], [0], marker='o', color='w', 
-                          markerfacecolor=color, markersize=10,
-                          label=f"{label_zh} / {label_en}",
-                          alpha=0.9))
-        
-        legend = ax.legend(handles=legend_elements, loc='upper right',
-                          fontsize=9, facecolor='#0a0a1a',
-                          edgecolor='#1a3a4a', labelcolor='#aaaacc',
-                          framealpha=0.9, title="距离环 / Distance Rings")
-        legend.get_title().set_fontsize(10)
-        legend.get_title().set_color('#00ff88')
-
-        # 底部统计
-        inner_count = sum(1 for d in distances.values() if d["distance"] < 0.3)
-        middle_count = sum(1 for d in distances.values() if 0.3 <= d["distance"] < 0.6)
-        outer_count = sum(1 for d in distances.values() if 0.6 <= d["distance"] < 0.8)
-        dark_count = sum(1 for d in distances.values() if d["distance"] >= 0.8)
-        
-        stats_text = (
-            f"内圈: {inner_count}人 | 中圈: {middle_count}人 | "
-            f"外圈: {outer_count}人 | 暗区: {dark_count}人"
-        )
-        ax.text(0.5, 0.02, stats_text, transform=ax.transAxes,
-                fontsize=9, color="#00ff88", ha='center',
-                bbox=dict(boxstyle='round,pad=0.6', facecolor='#1a1a2e', 
-                         edgecolor='#00ff88', alpha=0.8))
-
-        ax.set_xlim(-1.5, 1.5)
-        ax.set_ylim(-1.5, 1.5)
-        ax.set_aspect("equal")
-        ax.axis("off")
-
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=200, bbox_inches="tight",
-                    facecolor="#0a0a1a", edgecolor="none", pad_inches=0.3)
-        plt.close(fig)
-        buf.seek(0)
-        return buf.read()
-
-    def generate_heatmap(self, users, matrix, nicknames=None):
+    # ------------------------------------------------------------------ sonar
+    def render_sonar(self, *, users, matrix, islands, nicknames=None,
+                     msg_counts=None, island_names=None, drifters=None,
+                     global_total=0, local_total=0, command_prefix="/"):
         if not users or len(users) < 2:
             return None
-        if nicknames is None:
-            nicknames = {}
+        nicknames = nicknames or {}
+        msg_counts = msg_counts or {}
+        island_names = island_names or []
+        drifters = drifters or []
+        _, t = self._css()
+        coords = self._force_layout(users, matrix)
+        size = self.MAP_SVG
+        cxy = size / 2
+        radius = size / 2 - 96
+        node_px = {uid: (cxy + coords[uid][0] * radius, cxy + coords[uid][1] * radius) for uid in users}
 
-        n = len(users)
-        dist_matrix = np.zeros((n, n))
-        for i in range(n):
-            for j in range(n):
-                if i == j:
-                    continue
-                key = f"{users[i]}|{users[j]}"
-                dist_matrix[i][j] = matrix.get(key, 1.0)
+        svg_shapes, island_map, _, _ = self._svg_sonar(users, matrix, islands, msg_counts, node_px, t)
+        default_color = "#8e8e93"
+        label_of = {uid: self._strip_emoji(nicknames.get(uid, uid)) for uid in users}
+        ordered = sorted(users, key=lambda u: msg_counts.get(u, 0), reverse=True)
+        labels = self._place_labels(ordered, node_px, label_of, max_labels=24)
+        label_html = "".join(
+            self._label_div(cx, cy, self._esc(txt), island_map.get(uid, (0, default_color))[1])
+            for uid, (cx, cy, txt) in labels.items())
+        ring_tags = (self._ring_tag(cxy + radius * 0.3, cxy, "0.3")
+                     + self._ring_tag(cxy + radius * 0.6, cxy, "0.6")
+                     + self._ring_tag(cxy + radius * 0.9, cxy, "0.9"))
+        stage = f"<div class='stage' style='width:{size}px;height:{size}px'>{svg_shapes}{ring_tags}{label_html}</div>"
 
-        fig, ax = plt.subplots(figsize=(max(8, n * 0.8), max(6, n * 0.6)),
-                                facecolor="#0a0a1a")
-        ax.set_facecolor("#0a0a1a")
+        threshold = self.config.get("distance_threshold", 0.6)
+        edge_count = sum(1 for i in range(len(users)) for j in range(i + 1, len(users))
+                         if matrix.get(f"{users[i]}|{users[j]}", 1.0) < threshold)
 
-        labels = [nicknames.get(u, u) for u in users]
-        im = ax.imshow(dist_matrix, cmap="RdYlGn_r", vmin=0, vmax=1, aspect="auto")
+        chips = (f"<div class='chips'>"
+                 f"<div class='chip'><b>{len(users)}</b>成员</div>"
+                 f"<div class='chip violet'><b>{len(islands)}</b>社交圈</div>"
+                 f"<div class='chip green'><b>{edge_count}</b>连接</div>"
+                 f"<div class='chip pink'><b>{len(drifters)}</b>独立</div></div>")
 
-        ax.set_xticks(range(n))
-        ax.set_yticks(range(n))
-        ax.set_xticklabels(labels, rotation=45, ha="right", fontsize=8, color="#aaaacc")
-        ax.set_yticklabels(labels, fontsize=8, color="#aaaacc")
+        real_islands = [(island_names[i] if i < len(island_names) else f"社交圈 {i + 1}", isl)
+                        for i, isl in enumerate(islands) if isl.get("size", 0) >= 2]
+        lone = list(drifters)
+        for isl in islands:
+            if isl.get("size", 0) < 2:
+                lone.extend(isl["members"])
+        island_items = []
+        for i, (name, isl) in enumerate(real_islands):
+            color = self.SONAR_COLORS[i % len(self.SONAR_COLORS)]
+            members_str = self._esc("、".join(self._strip_emoji(nicknames.get(m, m)) for m in isl["members"][:14]))
+            island_items.append(
+                f"<div class='island' style='--c:{color}'><div class='name'>{self._esc(name)}</div>"
+                f"<div class='meta'>{isl['size']} 人 · 平均距离 {isl['avg_distance']}</div>"
+                f"<div class='members'>{members_str}</div></div>")
+        detail_inner = ""
+        if island_items:
+            detail_inner += f"<div class='section-label'>社交圈 Social Circles</div><div class='island-grid'>{''.join(island_items)}</div>"
+        if lone:
+            lone_names = self._esc("、".join(self._strip_emoji(nicknames.get(u, u)) for u in lone[:24]))
+            extra = f" 等 {len(lone)} 人" if len(lone) > 24 else ""
+            detail_inner += f"<div class='lone' style='margin-top:14px'><b>独立用户</b> · {len(lone)} 人<br>{lone_names}{extra}</div>"
 
-        for i in range(n):
-            for j in range(n):
-                val = dist_matrix[i][j]
-                color = "white" if val > 0.5 else "black"
-                ax.text(j, i, f"{val:.2f}", ha="center", va="center",
-                        fontsize=7, color=color)
+        cards = [
+            self._head("群聊社交声呐", "Group Chat Social Sonar Map") + "<div class='divider'></div>" + chips,
+            f"<div class='map-wrap'>{stage}</div>",
+        ]
+        if detail_inner:
+            cards.append(detail_inner)
+        body = "".join(self._card(c, last=(i == len(cards) - 1)) for i, c in enumerate(cards))
+        body += f"<div class='foot'>用 <code>{command_prefix}亲密度 @某人</code> 查看具体距离 · 本群 {local_total} / 全局 {global_total} 条消息</div>"
 
-        cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
-        cbar.ax.tick_params(colors="#aaaacc")
-        cbar.set_label("\u8ddd\u79bb", color="#aaaacc")
+        island_rows = max(1, math.ceil(len(real_islands) / 2))
+        inner = [64 + 21 + 42, self.MAP_SVG]
+        if detail_inner:
+            inner.append(30 + island_rows * 96 + (64 if lone else 0))
+        return self._render(body, self._cards_height(inner, footer=44))
 
-        buf = io.BytesIO()
-        fig.savefig(buf, format="png", dpi=150, bbox_inches="tight",
-                    facecolor="#0a0a1a", edgecolor="none")
-        plt.close(fig)
-        buf.seek(0)
-        return buf.read()
+    # ------------------------------------------------------------------ intimacy
+    def render_intimacy(self, *, nickname_a, nickname_b, dist, dist_label, scores,
+                        interact=None, cooccur_count=0, rank=None, command_prefix="/"):
+        dims = ["timing", "emoji", "vocab", "interaction", "cooccurrence"]
+        labels = ["时段重叠", "表情相似", "词汇相似", "直接互动", "共现频率"]
+        values = [max(0.0, min(1.0, float(scores.get(d, 0)))) for d in dims]
+        dist_color = self._dist_color(dist)
+        _, t = self._css()
+
+        size = self.RADAR_SVG
+        c = size / 2
+        R = 142
+        n = 5
+        angles = [math.radians(-90 + i * 360 / n) for i in range(n)]
+        sep = t["sep"]
+        svg = [f"<svg width='{size}' height='{size}' viewBox='0 0 {size} {size}' xmlns='http://www.w3.org/2000/svg'>"]
+        for frac in (0.25, 0.5, 0.75, 1.0):
+            pts = " ".join(f"{c + R * frac * math.cos(a):.1f},{c + R * frac * math.sin(a):.1f}" for a in angles)
+            svg.append(f"<polygon points='{pts}' fill='none' stroke='{sep}' stroke-width='1'/>")
+        for a in angles:
+            svg.append(f"<line x1='{c}' y1='{c}' x2='{c + R * math.cos(a):.1f}' y2='{c + R * math.sin(a):.1f}' stroke='{sep}' stroke-width='1'/>")
+        data_pts = " ".join(f"{c + R * v * math.cos(a):.1f},{c + R * v * math.sin(a):.1f}" for a, v in zip(angles, values))
+        svg.append(f"<polygon points='{data_pts}' fill='{self.BLUE}' fill-opacity='0.16' stroke='{self.BLUE}' stroke-width='2'/>")
+        for a, v in zip(angles, values):
+            vx, vy = c + R * v * math.cos(a), c + R * v * math.sin(a)
+            svg.append(f"<circle cx='{vx:.1f}' cy='{vy:.1f}' r='4.5' fill='{self.BLUE}' stroke='{t['card']}' stroke-width='1.5'/>")
+        svg.append("</svg>")
+        overlays = ""
+        for a, v, lab in zip(angles, values, labels):
+            vx, vy = c + R * v * math.cos(a), c + R * v * math.sin(a)
+            overlays += self._label_div(vx, vy - 14, f"{int(v * 100)}%", self.BLUE)
+            overlays += self._label_div(c + (R + 28) * math.cos(a), c + (R + 28) * math.sin(a), self._esc(lab), t["ink"])
+        stage = f"<div class='stage' style='width:{size}px;height:{size}px'>{ ''.join(svg)}{overlays}</div>"
+
+        dim_rows = []
+        for label, val in zip(labels, values):
+            dim_rows.append(
+                f"<div class='dim' style='--c:{self._dist_color(val)}'><div class='nm'>{label}</div>"
+                f"<div class='bar'><i style='width:{val*100:.1f}%'></i></div>"
+                f"<div class='pct'>{val*100:.0f}%</div></div>")
+
+        pair = (f"<div class='pair-row' style='--dc:{dist_color}'>"
+                f"<div class='pair-names'><span>{self._esc(self._strip_emoji(nickname_a))}</span>"
+                f"<span class='sep'>&lt;-&gt;</span>"
+                f"<span>{self._esc(self._strip_emoji(nickname_b))}</span></div>"
+                f"<div class='dist-badge'><div class='v'>{dist:.2f}</div>"
+                f"<div class='l'>{self._esc(dist_label)}</div></div></div>")
+
+        dim_extra = ""
+        if interact and (interact.get("reply_total", 0) > 0 or cooccur_count > 0):
+            pills = []
+            if interact.get("a_to_b", 0) or interact.get("b_to_a", 0):
+                pills.append(f"<div class='pill'>@互动 <b>{interact['a_to_b'] + interact['b_to_a']}</b> 次</div>")
+                pills.append(f"<div class='pill'>回复合计 <b>{interact.get('reply_total', 0)}</b> 次</div>")
+            if cooccur_count > 0:
+                pills.append(f"<div class='pill'>同时在线 <b>{cooccur_count}</b> 次</div>")
+            dim_extra += f"<div class='kv' style='margin-top:14px'>{''.join(pills)}</div>"
+        if rank:
+            dim_extra += f"<div class='note' style='margin-top:10px'>你们是本群第 <b>{rank}</b> 亲密的组合</div>"
+
+        cards = [
+            self._head("亲密度报告", "Intimacy Analysis") + "<div class='divider'></div>" + pair,
+            f"<div class='radar-wrap'>{stage}</div>",
+            f"<div class='section-label'>五维相似度 Dimensions</div><div class='dim-grid'>{''.join(dim_rows)}</div>{dim_extra}",
+        ]
+        body = "".join(self._card(c, last=(i == len(cards) - 1)) for i, c in enumerate(cards))
+        return self._render(body, self._cards_height([64 + 21 + 76, self.RADAR_SVG, 30 + 5 * 26 + (60 if dim_extra else 0)], footer=10))
+
+    # ------------------------------------------------------------------ personal radar
+    def render_personal_radar(self, *, user_id, distances, nicknames=None,
+                              global_count=0, presence=0, command_prefix="/"):
+        if not distances:
+            return None
+        nicknames = nicknames or {}
+        others = [uid for uid, _ in sorted(distances.items(), key=lambda x: x[1]["distance"])]
+        if not others:
+            return None
+        _, t = self._css()
+        size = self.MAP_SVG
+        cxy = size / 2
+        radius = size / 2 - 104
+        dist_scale = self.config.get("radar_distance_scale", 1.2)
+        max_radius = self.config.get("radar_max_radius", 1.1)
+        n = len(others)
+        my_name = self._strip_emoji(nicknames.get(user_id, user_id))
+        sep = t["sep"]
+        node_px = {}
+        svg = [f"<svg width='{size}' height='{size}' viewBox='0 0 {size} {size}' xmlns='http://www.w3.org/2000/svg'>"]
+        for r_frac in (0.3, 0.6, 0.9):
+            svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='{radius * r_frac:.1f}' fill='none' stroke='{sep}' stroke-width='1'/>")
+        for i, uid in enumerate(others):
+            dist = distances[uid]["distance"]
+            ang = 2 * math.pi * i / n
+            r = min(dist * dist_scale, max_radius) * radius
+            x, y = cxy + r * math.cos(ang), cxy + r * math.sin(ang)
+            node_px[uid] = (x, y)
+            color = self._dist_color(dist)
+            node_r = 6 + max(0.0, (1.0 - dist)) * 11
+            svg.append(f"<line x1='{cxy}' y1='{cxy}' x2='{x:.1f}' y2='{y:.1f}' stroke='{color}' stroke-width='0.8' opacity='0.22'/>")
+            svg.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{node_r:.1f}' fill='{color}' stroke='{t['card']}' stroke-width='1.6'/>")
+        svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='10' fill='{self.BLUE}' stroke='{t['card']}' stroke-width='2.5'/>")
+        svg.append("</svg>")
+        label_of = {uid: f"{self._strip_emoji(nicknames.get(uid, uid))} {distances[uid]['distance']:.2f}" for uid in others}
+        labels = self._place_labels(others, node_px, label_of, max_labels=24, char_w=8)
+        label_html = "".join(
+            self._label_div(cx, cy, self._esc(txt), self._dist_color(distances[uid]["distance"]))
+            for uid, (cx, cy, txt) in labels.items())
+        ring_tags = "".join(self._ring_tag(cxy + radius * f, cxy, lab)
+                            for f, lab in [(0.3, "内圈"), (0.6, "中圈"), (0.9, "外圈")])
+        me_tag = self._label_div(cxy, cxy + 24, self._esc(my_name[:10]), self.BLUE)
+        stage = f"<div class='stage' style='width:{size}px;height:{size}px'>{ ''.join(svg)}{ring_tags}{label_html}{me_tag}</div>"
+
+        rings = {"inner": [], "middle": [], "outer": [], "dark": []}
+        for uid, info in distances.items():
+            d = info["distance"]
+            name = self._strip_emoji(nicknames.get(uid, uid))
+            rings["inner" if d < 0.3 else "middle" if d < 0.6 else "outer" if d < 0.8 else "dark"].append((name, d))
+        ring_items = []
+        for key, lab, rng in [("inner", "内圈", "<0.3"), ("middle", "中圈", "0.3~0.6"),
+                              ("outer", "外圈", "0.6~0.8"), ("dark", "暗区", ">0.8")]:
+            items = rings[key]
+            if not items:
+                continue
+            color = self.RING_COLORS[key]
+            names = self._esc("  ".join(f"{nm}({dd:.2f})" for nm, dd in items[:16]))
+            ring_items.append(
+                f"<div class='island' style='--c:{color}'><div class='name'>{lab} "
+                f"<span style='color:{t['sub']};font-size:12px;font-weight:400'> {rng} · {len(items)}人</span></div>"
+                f"<div class='members'>{names}</div></div>")
+
+        chips = (f"<div class='chips'><div class='chip'><b>{global_count}</b>全局消息</div>"
+                 f"<div class='chip violet'><b>{presence}</b>本群消息</div>"
+                 f"<div class='chip pink'><b>{len(others)}</b>联系人</div></div>")
+
+        cards = [
+            self._head(f"{my_name} 的社交雷达", "Personal Social Radar") + "<div class='divider'></div>" + chips,
+            f"<div class='map-wrap'>{stage}</div>",
+        ]
+        if ring_items:
+            cards.append(f"<div class='section-label'>距离分布 Distance Rings</div><div class='island-grid'>{''.join(ring_items)}</div>")
+        body = "".join(self._card(c, last=(i == len(cards) - 1)) for i, c in enumerate(cards))
+        inner = [64 + 21 + 42, self.MAP_SVG]
+        if ring_items:
+            inner.append(30 + len(ring_items) * 96)
+        return self._render(body, self._cards_height(inner, footer=8))
+
+    # ------------------------------------------------------------------ profile
+    def render_profile(self, *, nickname, global_count, groups=None, tags="",
+                       peak_period="", top_emoji=None):
+        groups = groups or []
+        top_emoji = top_emoji or []
+        chips = (f"<div class='chips'><div class='chip'><b>{global_count}</b>消息</div>"
+                 f"<div class='chip violet'><b>{len(groups)}</b>活跃群</div></div>")
+        blocks = self._head(f"{self._strip_emoji(nickname)} 的全局档案", "Global Profile") + "<div class='divider'></div>" + chips
+        if tags:
+            blocks += f"<div class='tags' style='margin-top:16px'>{ ''.join(self._tag(x) for x in tags.split('/') if x.strip())}</div>"
+        kv = ""
+        if peak_period:
+            kv += f"<div class='pill'>活跃时段 <b>{self._esc(peak_period)}</b></div>"
+        if top_emoji:
+            kv += f"<div class='pill'>常用表情 <b>{' '.join(self._esc(e) for e, _ in top_emoji[:5])}</b></div>"
+        if kv:
+            blocks += f"<div class='kv' style='margin-top:14px'>{kv}</div>"
+        if groups:
+            items = "".join(f"<div class='pill'>[{self._esc(p)}] {self._esc(g)}: <b>{c}</b>条</div>" for p, g, c in groups)
+            blocks += (f"<div class='section-label' style='margin-top:18px'>群聊分布 Groups</div>"
+                       f"<div class='kv'>{items}</div>")
+        body = self._card(blocks, last=True)
+        h = 64 + 21 + 42 + (44 if tags else 0) + (48 if kv else 0) + (30 + max(1, math.ceil(len(groups) / 4)) * 44 if groups else 0)
+        return self._render(body, self._cards_height([h], footer=8))
+
+    def _tag(self, x):
+        return f"<span class='tag'>{self._esc(x.strip())}</span>"
+
+    # ------------------------------------------------------------------ parallel
+    def render_parallel(self, *, my_name, local=None, cross=None, command_prefix="/"):
+        local = local or None
+        cross = cross or []
+        _, t = self._css()
+        cards = [self._head("正在寻找另一个你...", "Parallel Self")]
+        inner_h = [64]
+        if local:
+            tname = self._strip_emoji(local.get("nickname", local["user_id"]))
+            sim = int(local["similarity"] * 100)
+            checks = ""
+            for dim, label in [("timing", "活跃时段"), ("vocab", "消息风格"), ("emoji", "表情偏好")]:
+                val = local.get("scores", {}).get(dim, 0)
+                checks += (f"<div class='dim' style='--c:{self.BLUE}'><div class='nm'>{label}</div>"
+                           f"<div class='bar'><i style='width:{val*100:.1f}%'></i></div>"
+                           f"<div class='pct'>{val*100:.0f}%</div></div>")
+            cards.append(
+                f"<div class='section-label'>本群匹配 Local Match</div>"
+                f"<div class='pair-row' style='--dc:{self.BLUE};margin-bottom:14px'>"
+                f"<div class='pair-names' style='font-size:20px'><span>{self._esc(my_name)}</span>"
+                f"<span class='sep'>&lt;-&gt;</span><span>{self._esc(tname)}</span></div>"
+                f"<div class='dist-badge' style='--dc:{self.BLUE}'><div class='v'>{sim}%</div>"
+                f"<div class='l'>相似度</div></div></div><div class='dim-grid'>{checks}</div>")
+            inner_h.append(30 + 70 + 3 * 26)
+        if cross:
+            items = ""
+            for item in cross:
+                sp = item.get("scope", "").split(":")
+                platform_name = sp[1] if len(sp) > 1 else "未知"
+                sim = int(item["similarity"] * 100)
+                label = self._strip_emoji(item.get("nickname", item["user_id"]))
+                details = [f"{lb}{int(item.get('scores', {}).get(d, 0) * 100)}%"
+                           for d, lb in [("timing", "时段"), ("emoji", "表情"), ("vocab", "词汇")]
+                           if item.get("scores", {}).get(d, 0) > 0.6]
+                det = f"<div class='meta'>匹配项: {self._esc(', '.join(details))}</div>" if details else ""
+                items += (f"<div class='island' style='--c:{self.VIOLET}'><div class='name'>"
+                          f"[{self._esc(platform_name)}] {self._esc(label)} "
+                          f"<span style='color:{self.BLUE}'>· {sim}%</span></div>{det}</div>")
+            cards.append(f"<div class='section-label'>跨群匹配 Cross-Scope ({len(cross)})</div>"
+                         f"<div class='island-grid'>{''.join(items)}</div>")
+            inner_h.append(30 + max(1, math.ceil(len(cross) / 2)) * 96)
+        if len(cards) == 1:
+            cards.append("<div class='empty'>没有找到另一个你<br>（可能你和所有人都互动过了）</div>")
+            inner_h.append(120)
+        body = "".join(self._card(c, last=(i == len(cards) - 1)) for i, c in enumerate(cards))
+        body += f"<div class='foot'>用 <code>{command_prefix}亲密度 @某人</code> 查看具体距离</div>"
+        return self._render(body, self._cards_height(inner_h, footer=44))

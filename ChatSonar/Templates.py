@@ -2,19 +2,19 @@ from typing import Dict, List, Optional
 
 
 class SonarTemplates:
-    PRIMARY_COLOR = "#00ff88"
-    ACCENT_COLOR = "#00bbff"
-    WARNING_COLOR = "#ffaa00"
-    ERROR_COLOR = "#ff4466"
-    SECONDARY_COLOR = "#8888aa"
-    DARK_BG = "rgba(10, 10, 26, 0.95)"
-    CARD_BG = "rgba(20, 20, 40, 0.8)"
+    PRIMARY_COLOR = "#4f7cff"
+    ACCENT_COLOR = "#8b5cf6"
+    WARNING_COLOR = "#ec4899"
+    ERROR_COLOR = "#f43f5e"
+    SECONDARY_COLOR = "#6b7280"
+    DARK_BG = "#ffffff"
+    CARD_BG = "#f8faff"
 
     RING_COLORS = {
-        "inner": "#00ff88",
-        "middle": "#00bbff",
-        "outer": "#ffaa00",
-        "dark": "#ff4466",
+        "inner": "#4f7cff",
+        "middle": "#8b5cf6",
+        "outer": "#ec4899",
+        "dark": "#94a3b8",
     }
 
     RING_LABELS = {
@@ -438,7 +438,7 @@ class SonarTemplates:
                 val = scores.get(dim, 0)
                 pct = int(val * 100)
                 mark = "+" if val >= 0.6 else "-"
-                checks.append(f'<span style="color:{"#00ff88" if val >= 0.6 else "#ff4466"};">{mark}</span> {label} {pct}%')
+                checks.append(f'<span style="color:{"#4f7cff" if val >= 0.6 else "#f43f5e"};">{mark}</span> {label} {pct}%')
             checks_html = "<br>".join(checks)
             sections += (
                 f'<div style="margin-bottom:10px;">'
