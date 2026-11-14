@@ -2,16 +2,18 @@ from typing import Dict, List, Optional
 
 
 class SonarTemplates:
-    PRIMARY_COLOR = "#4f7cff"
+    """文本回退模板（html / markdown / text）。"""
+
+    PRIMARY_COLOR = "#6366f1"
     ACCENT_COLOR = "#8b5cf6"
     WARNING_COLOR = "#ec4899"
     ERROR_COLOR = "#f43f5e"
-    SECONDARY_COLOR = "#6b7280"
-    DARK_BG = "#ffffff"
-    CARD_BG = "#f8faff"
+    SECONDARY_COLOR = "#64748b"
+    DARK_BG = "#f1f5f9"
+    CARD_BG = "#ffffff"
 
     RING_COLORS = {
-        "inner": "#4f7cff",
+        "inner": "#6366f1",
         "middle": "#8b5cf6",
         "outer": "#ec4899",
         "dark": "#94a3b8",
@@ -36,9 +38,10 @@ class SonarTemplates:
     def _bar_html(cls, value: float, color: str, width: int = 120) -> str:
         pct = int(value * 100)
         return (
-            f'<div style="display:inline-block;width:{width}px;height:8px;'
-            f'background:rgba(255,255,255,0.08);border-radius:4px;vertical-align:middle;">'
-            f'<div style="width:{pct}%;height:100%;background:{color};border-radius:4px;"></div>'
+            f'<div style="display:inline-block;width:{width}px;height:10px;'
+            f'background:rgba(99,102,241,0.12);border-radius:999px;vertical-align:middle;overflow:hidden;">'
+            f'<div style="width:{pct}%;height:100%;background:linear-gradient(90deg,{color},'
+            f'rgba(255,255,255,0.4));border-radius:999px;"></div>'
             f'</div>'
         )
 
@@ -54,15 +57,14 @@ class SonarTemplates:
             for n, d in items
         )
         return (
-            f'<details style="margin-bottom:6px;">'
-            f'<summary style="cursor:pointer;font-size:13px;padding:4px 8px;'
-            f'background:rgba(255,255,255,0.03);border-radius:4px;'
-            f'border-left:3px solid {color};">'
+            f'<details style="margin-bottom:8px;">'
+            f'<summary style="cursor:pointer;font-size:13px;padding:8px 14px;'
+            f'background:rgba(99,102,241,0.07);border-radius:999px;list-style:none;">'
             f'<span style="color:{color};font-weight:bold;">{label}</span>'
             f' <span style="color:{cls.SECONDARY_COLOR};font-size:11px;">{range_desc}</span>'
             f' <span style="font-size:12px;">({count}人)</span>'
             f'</summary>'
-            f'<div style="padding:6px 8px 6px 12px;display:flex;flex-wrap:wrap;gap:4px 0;">'
+            f'<div style="padding:8px 14px 8px 16px;display:flex;flex-wrap:wrap;gap:4px 0;">'
             f'{names_html}'
             f'</div></details>'
         )
@@ -78,8 +80,8 @@ class SonarTemplates:
     @classmethod
     def _build_radar_group_html(cls, global_count, presence, rings, tags) -> str:
         stats_html = (
-            f'<div style="padding:6px 10px;background:rgba(0,255,136,0.06);'
-            f'border-radius:6px;margin-bottom:10px;font-size:12px;">'
+            f'<div style="padding:9px 16px;background:rgba(99,102,241,0.07);'
+            f'border-radius:999px;margin-bottom:12px;font-size:12px;display:inline-block;">'
             f'全局消息: <b>{global_count}</b> 条 | 本群消息: <b>{presence}</b> 条'
             f'</div>'
         )
@@ -91,15 +93,15 @@ class SonarTemplates:
         tags_html = ""
         if tags:
             tags_html = (
-                f'<div style="margin-top:8px;font-size:12px;">'
+                f'<div style="margin-top:10px;font-size:12px;">'
                 f'<span style="color:{cls.ACCENT_COLOR};">社交标签:</span> {tags}'
                 f'</div>'
             )
 
         return (
-            f'<div style="padding:12px;border-radius:8px;background:{cls.DARK_BG};'
-            f'color:#ccd;">'
-            f'<div style="color:{cls.PRIMARY_COLOR};font-size:15px;font-weight:bold;margin-bottom:10px;">'
+            f'<div style="padding:18px 22px;border-radius:24px;background:{cls.DARK_BG};'
+            f'color:#1f2937;">'
+            f'<div style="color:{cls.PRIMARY_COLOR};font-size:16px;font-weight:bold;margin-bottom:12px;">'
             f'你的社交雷达</div>'
             f'{stats_html}'
             f'{rings_html}'
@@ -177,6 +179,14 @@ class SonarTemplates:
         return {"html": html, "markdown": markdown, "text": text}
 
     @classmethod
+    def _summary_chip(cls, color: str, title: str, meta: str) -> str:
+        return (
+            f'<summary style="cursor:pointer;font-size:13px;padding:8px 14px;'
+            f'background:rgba(99,102,241,0.07);border-radius:999px;list-style:none;">'
+            f'<b style="color:{color};">{title}</b> · {meta}</summary>'
+        )
+
+    @classmethod
     def _build_sonar_html(cls, global_total, local_total, user_count,
                           real_count, real_islands, lone_users, nicknames, prefix) -> str:
         lone_count = len(lone_users)
@@ -191,13 +201,10 @@ class SonarTemplates:
         for name, island in real_islands:
             members_str = "、".join(nicknames.get(m, m) for m in island["members"])
             islands_html += (
-                f'<details style="margin-bottom:6px;">'
-                f'<summary style="cursor:pointer;font-size:13px;padding:4px 8px;'
-                f'background:rgba(255,255,255,0.03);border-radius:4px;'
-                f'border-left:3px solid {cls.PRIMARY_COLOR};">'
-                f'<b>{name}</b> · {island["size"]}人 · 距离 {island["avg_distance"]}'
-                f'</summary>'
-                f'<div style="padding:6px 8px 6px 12px;font-size:12px;color:{cls.SECONDARY_COLOR};">'
+                f'<details style="margin-bottom:8px;">'
+                + cls._summary_chip(cls.PRIMARY_COLOR, name,
+                                    f'{island["size"]}人 · 距离 {island["avg_distance"]}')
+                + f'<div style="padding:8px 16px;font-size:12px;color:{cls.SECONDARY_COLOR};">'
                 f'{members_str}'
                 f'</div></details>'
             )
@@ -206,25 +213,22 @@ class SonarTemplates:
         if lone_users:
             lone_names = "、".join(nicknames.get(u, u) for u in lone_users)
             lone_html = (
-                f'<details style="margin-bottom:6px;">'
-                f'<summary style="cursor:pointer;font-size:13px;padding:4px 8px;'
-                f'background:rgba(255,255,255,0.03);border-radius:4px;'
-                f'border-left:3px solid {cls.SECONDARY_COLOR};">'
-                f'独立用户 · {lone_count}人'
-                f'</summary>'
-                f'<div style="padding:6px 8px 6px 12px;font-size:12px;color:{cls.SECONDARY_COLOR};">'
+                f'<details style="margin-bottom:8px;">'
+                + cls._summary_chip(cls.SECONDARY_COLOR, "独立用户", f"{lone_count}人")
+                + f'<div style="padding:8px 16px;font-size:12px;color:{cls.SECONDARY_COLOR};">'
                 f'{lone_names}'
                 f'</div></details>'
             )
 
         return (
-            f'<div style="padding:12px;border-radius:8px;background:{cls.DARK_BG};color:#ccd;">'
-            f'<div style="color:{cls.PRIMARY_COLOR};font-size:15px;font-weight:bold;margin-bottom:10px;">'
+            f'<div style="padding:18px 22px;border-radius:24px;background:{cls.DARK_BG};'
+            f'color:#1f2937;">'
+            f'<div style="color:{cls.PRIMARY_COLOR};font-size:16px;font-weight:bold;margin-bottom:12px;">'
             f'声呐扫描完成</div>'
-            f'<div style="padding:6px 10px;background:rgba(0,255,136,0.06);'
-            f'border-radius:6px;margin-bottom:10px;font-size:12px;">{stats}</div>'
+            f'<div style="padding:9px 16px;background:rgba(99,102,241,0.07);'
+            f'border-radius:999px;margin-bottom:12px;font-size:12px;display:inline-block;">{stats}</div>'
             f'{islands_html}{lone_html}'
-            f'<div style="margin-top:8px;font-size:11px;color:{cls.SECONDARY_COLOR};">'
+            f'<div style="margin-top:10px;font-size:11px;color:{cls.SECONDARY_COLOR};">'
             f'用 {prefix}亲密度 @某人 查看具体距离</div>'
             f'</div>'
         )
@@ -298,11 +302,12 @@ class SonarTemplates:
         for dim, label in cls.DIM_NAMES.items():
             val = scores.get(dim, 0)
             pct = int(val * 100)
-            filled = int(val * 10)
-            bar = "█" * filled + "░" * (10 - filled)
             dims_html += (
-                f'<div style="margin-bottom:4px;font-size:12px;">'
-                f'{label}  {bar} {pct}%'
+                f'<div style="margin-bottom:6px;font-size:12px;display:flex;'
+                f'align-items:center;gap:10px;">'
+                f'<span style="width:76px;">{label}</span>'
+                f'{cls._bar_html(val, dist_color)}'
+                f'<span style="font-weight:600;">{pct}%</span>'
                 f'</div>'
             )
 
@@ -321,29 +326,30 @@ class SonarTemplates:
                 items.append(f'共现次数: {cooccur_count}')
             interact_items = "<br>".join(items)
             interact_html = (
-                f'<details style="margin-top:8px;">'
-                f'<summary style="cursor:pointer;font-size:12px;color:{cls.SECONDARY_COLOR};">'
-                f'互动记录</summary>'
-                f'<div style="padding:6px 8px;font-size:12px;">{interact_items}</div>'
+                f'<details style="margin-top:10px;">'
+                f'<summary style="cursor:pointer;font-size:12px;color:{cls.SECONDARY_COLOR};'
+                f'list-style:none;">互动记录</summary>'
+                f'<div style="padding:8px 4px;font-size:12px;">{interact_items}</div>'
                 f'</details>'
             )
 
         rank_html = ""
         if rank:
             rank_html = (
-                f'<div style="margin-top:8px;font-size:12px;">'
+                f'<div style="margin-top:10px;font-size:12px;">'
                 f'你们是本群第 <b style="color:{cls.PRIMARY_COLOR};">{rank}</b> 亲密的组合'
                 f'</div>'
             )
 
         return (
-            f'<div style="padding:12px;border-radius:8px;background:{cls.DARK_BG};color:#ccd;">'
-            f'<div style="color:{cls.PRIMARY_COLOR};font-size:15px;font-weight:bold;margin-bottom:10px;">'
+            f'<div style="padding:18px 22px;border-radius:24px;background:{cls.DARK_BG};'
+            f'color:#1f2937;">'
+            f'<div style="color:{cls.PRIMARY_COLOR};font-size:16px;font-weight:bold;margin-bottom:12px;">'
             f'亲密度报告</div>'
-            f'<div style="font-size:13px;margin-bottom:8px;">'
-            f'<b>{nickname_a}</b> <span style="color:{dist_color};">&lt;-&gt;</span> <b>{nickname_b}</b>'
+            f'<div style="font-size:14px;margin-bottom:8px;">'
+            f'<b>{nickname_a}</b> <span style="color:{dist_color};">♥</span> <b>{nickname_b}</b>'
             f'</div>'
-            f'<div style="font-size:13px;margin-bottom:10px;">'
+            f'<div style="font-size:13px;margin-bottom:12px;">'
             f'综合距离: <b style="color:{dist_color};">{dist:.2f}</b> ({dist_label})</div>'
             f'{dims_html}'
             f'{interact_html}{rank_html}'
@@ -437,16 +443,17 @@ class SonarTemplates:
             for dim, label in [("timing", "活跃时段"), ("vocab", "消息风格"), ("emoji", "表情偏好")]:
                 val = scores.get(dim, 0)
                 pct = int(val * 100)
+                color = cls.PRIMARY_COLOR if val >= 0.6 else cls.ERROR_COLOR
                 mark = "+" if val >= 0.6 else "-"
-                checks.append(f'<span style="color:{"#4f7cff" if val >= 0.6 else "#f43f5e"};">{mark}</span> {label} {pct}%')
+                checks.append(f'<span style="color:{color};font-weight:bold;">{mark}</span> {label} {pct}%')
             checks_html = "<br>".join(checks)
             sections += (
-                f'<div style="margin-bottom:10px;">'
-                f'<div style="font-size:12px;color:{cls.ACCENT_COLOR};margin-bottom:4px;">本群匹配</div>'
-                f'<div style="font-size:13px;"><b>{my_name}</b> &lt;-&gt; <b>{tname}</b></div>'
-                f'<div style="font-size:13px;margin:4px 0;">相似度: <b style="color:{cls.PRIMARY_COLOR};">{sim}%</b></div>'
+                f'<div style="margin-bottom:12px;">'
+                f'<div style="font-size:12px;color:{cls.ACCENT_COLOR};margin-bottom:5px;">本群匹配</div>'
+                f'<div style="font-size:14px;"><b>{my_name}</b> ♥ <b>{tname}</b></div>'
+                f'<div style="font-size:13px;margin:5px 0;">相似度: <b style="color:{cls.PRIMARY_COLOR};">{sim}%</b></div>'
                 f'<div style="font-size:12px;">{checks_html}</div>'
-                f'<div style="font-size:11px;color:{cls.SECONDARY_COLOR};margin-top:4px;">'
+                f'<div style="font-size:11px;color:{cls.SECONDARY_COLOR};margin-top:5px;">'
                 f'试试 {prefix}亲密度 @{tname} 看看详细距离</div>'
                 f'</div>'
             )
@@ -467,34 +474,38 @@ class SonarTemplates:
                         details.append(f"{dim_label}{int(scores[dim] * 100)}%")
                 details_line = ""
                 if details:
-                    details_line = f'<div style="font-size:11px;color:{cls.SECONDARY_COLOR};">匹配项: {", ".join(details)}</div>'
+                    details_line = f'<div style="font-size:11px;color:{cls.SECONDARY_COLOR};margin-top:3px;">匹配项: {", ".join(details)}</div>'
                 items_html += (
-                    f'<div style="margin-bottom:6px;padding:6px 8px;background:rgba(255,255,255,0.03);border-radius:4px;">'
-                    f'<div style="font-size:12px;">[{platform_name}] <b>{label}</b> '
-                    f'<span style="color:{cls.PRIMARY_COLOR};">{sim}%</span></div>'
+                    f'<div style="margin-bottom:8px;padding:10px 14px;background:rgba(139,92,246,0.07);'
+                    f'border-radius:16px;">'
+                    f'<div style="font-size:12px;">'
+                    f'<span style="color:{cls.ACCENT_COLOR};font-weight:600;">[{platform_name}]</span> '
+                    f'<b>{label}</b> <span style="color:{cls.PRIMARY_COLOR};">{sim}%</span></div>'
                     f'{details_line}'
                     f'</div>'
                 )
             sections += (
-                f'<details style="margin-top:6px;">'
-                f'<summary style="cursor:pointer;font-size:12px;color:{cls.ACCENT_COLOR};">'
+                f'<details style="margin-top:8px;">'
+                f'<summary style="cursor:pointer;font-size:12px;color:{cls.ACCENT_COLOR};list-style:none;">'
                 f'跨群匹配 ({len(cross)}个)</summary>'
-                f'<div style="padding:6px 0;">{items_html}</div>'
+                f'<div style="padding:8px 0;">{items_html}</div>'
                 f'</details>'
             )
 
         if not local and not cross:
             return (
-                f'<div style="padding:12px;border-radius:8px;background:{cls.DARK_BG};color:#ccd;">'
-                f'<div style="color:{cls.PRIMARY_COLOR};font-size:15px;font-weight:bold;margin-bottom:8px;">'
+                f'<div style="padding:18px 22px;border-radius:24px;background:{cls.DARK_BG};'
+                f'color:#1f2937;">'
+                f'<div style="color:{cls.PRIMARY_COLOR};font-size:16px;font-weight:bold;margin-bottom:10px;">'
                 f'正在寻找另一个你...</div>'
                 f'<div style="font-size:13px;">没有找到另一个你（可能你和所有人都互动过了）</div>'
                 f'</div>'
             )
 
         return (
-            f'<div style="padding:12px;border-radius:8px;background:{cls.DARK_BG};color:#ccd;">'
-            f'<div style="color:{cls.PRIMARY_COLOR};font-size:15px;font-weight:bold;margin-bottom:10px;">'
+            f'<div style="padding:18px 22px;border-radius:24px;background:{cls.DARK_BG};'
+            f'color:#1f2937;">'
+            f'<div style="color:{cls.PRIMARY_COLOR};font-size:16px;font-weight:bold;margin-bottom:12px;">'
             f'正在寻找另一个你...</div>'
             f'{sections}'
             f'</div>'
@@ -601,17 +612,17 @@ class SonarTemplates:
                 )
             groups_html = "".join(items)
             groups_html = (
-                f'<details style="margin-bottom:8px;">'
-                f'<summary style="cursor:pointer;font-size:12px;color:{cls.SECONDARY_COLOR};">'
-                f'群聊分布 ({len(groups)}个)</summary>'
-                f'<div style="padding:6px 8px;display:flex;flex-wrap:wrap;gap:4px 0;">{groups_html}</div>'
-                f'</details>'
+                f'<div style="margin-bottom:10px;">'
+                f'<div style="cursor:pointer;font-size:12px;color:{cls.SECONDARY_COLOR};margin-bottom:5px;">'
+                f'群聊分布 ({len(groups)}个)</div>'
+                f'<div style="display:flex;flex-wrap:wrap;gap:4px 0;">{groups_html}</div>'
+                f'</div>'
             )
 
         tags_html = ""
         if tags:
             tags_html = (
-                f'<div style="margin-bottom:6px;font-size:12px;">'
+                f'<div style="margin-bottom:8px;font-size:12px;">'
                 f'<span style="color:{cls.ACCENT_COLOR};">社交标签:</span> {tags}'
                 f'</div>'
             )
@@ -630,11 +641,12 @@ class SonarTemplates:
             )
 
         return (
-            f'<div style="padding:12px;border-radius:8px;background:{cls.DARK_BG};color:#ccd;">'
-            f'<div style="color:{cls.PRIMARY_COLOR};font-size:15px;font-weight:bold;margin-bottom:10px;">'
+            f'<div style="padding:18px 22px;border-radius:24px;background:{cls.DARK_BG};'
+            f'color:#1f2937;">'
+            f'<div style="color:{cls.PRIMARY_COLOR};font-size:16px;font-weight:bold;margin-bottom:12px;">'
             f'{nickname} 的全局档案</div>'
-            f'<div style="padding:6px 10px;background:rgba(0,255,136,0.06);'
-            f'border-radius:6px;margin-bottom:10px;font-size:12px;">'
+            f'<div style="padding:9px 16px;background:rgba(99,102,241,0.07);'
+            f'border-radius:999px;margin-bottom:12px;font-size:12px;display:inline-block;">'
             f'消息统计: 共 <b>{global_count}</b> 条</div>'
             f'{groups_html}{tags_html}{period_html}{emoji_html}'
             f'</div>'

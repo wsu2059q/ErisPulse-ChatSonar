@@ -1,7 +1,15 @@
+"""
+命令处理器
+
+注册声呐模块全部命令（群地图/亲密度/小圈子/另一个我/我的位置/退订与重新加入），
+组装分析结果并发送图片或文本回退消息。
+"""
 from .Templates import SonarTemplates
 
 
 class Commands:
+    """声呐命令注册与消息回复。"""
+
     def __init__(self, sdk, collector, analyzer, visualizer, config):
         self.sdk = sdk
         self.logger = sdk.logger.get_child("ChatSonar.Commands")
@@ -11,6 +19,11 @@ class Commands:
         self.config = config
 
     def register(self):
+        """
+        注册全部命令处理器。
+
+        :return: None
+        """
         from ErisPulse.Core.Event import command
 
         @command("群地图", help="生成全群社交关系地图")
@@ -51,8 +64,8 @@ class Commands:
             return None, None
         return f"sonar:{platform}:{group_id}", group_id
 
-    def _get_nickname(self, event, user_id):
-        info = self.sdk.storage.get(f"sonar:profile:{user_id}:info", {})
+    async def _get_nickname(self, event, user_id):
+        info = await self.sdk.storage.aget(f"sonar:profile:{user_id}:info", {})
         if info.get("nickname"):
             return info["nickname"]
         sender = event.get_sender()
@@ -121,30 +134,30 @@ class Commands:
             await event.reply("请在群聊中使用此命令")
             return
 
-        data = self.analyzer.compute_distance_matrix(scope, force=True)
+        data = await self.analyzer.compute_distance_matrix(scope, force=True)
         if not data or len(data["users"]) < 2:
             await self._reply_insufficient_data(event, scope)
             return
 
-        islands = self.analyzer.detect_islands(scope, data)
+        islands = await self.analyzer.detect_islands(scope, data)
 
         nicknames = {}
         msg_counts = {}
         for uid in data["users"]:
-            nicknames[uid] = self._get_nickname(event, uid)
-            msg_counts[uid] = self.analyzer._get_presence(scope, uid)
+            nicknames[uid] = await self._get_nickname(event, uid)
+            msg_counts[uid] = await self.analyzer._get_presence(scope, uid)
 
-        global_total = sum(self.analyzer._get_global_count(u) for u in data["users"])
+        global_total = sum([await self.analyzer._get_global_count(u) for u in data["users"]])
         local_total = sum(msg_counts.values())
 
-        island_names = self._generate_island_names(scope, islands, nicknames)
+        island_names = await self._generate_island_names(scope, islands, nicknames, event)
 
         drifters = [u for u in data["users"]
                      if not any(u in isl["members"] for isl in islands)]
 
         prefix = self._get_command_prefix()
 
-        image_bytes = self.visualizer.render_sonar(
+        image_bytes = await self.visualizer.render_sonar(
             users=data["users"], matrix=data["matrix"], islands=islands,
             nicknames=nicknames, msg_counts=msg_counts,
             island_names=island_names, drifters=drifters,
@@ -174,24 +187,24 @@ class Commands:
             await event.reply("你不能探测自己")
             return
 
-        optout = self.storage_get_optout(scope)
+        optout = await self.storage_get_optout(scope)
         if target_id in optout:
             await event.reply("该用户已关闭数据收集")
             return
 
-        dist, scores = self.analyzer.compute_pair_distance(scope, user_id, target_id)
+        dist, scores = await self.analyzer.compute_pair_distance(scope, user_id, target_id)
 
         dist_label = "非常近" if dist < 0.3 else "较近" if dist < 0.5 else "中等" if dist < 0.7 else "很远" if dist < 0.85 else "极远"
 
-        nickname_a = self._get_nickname(event, user_id)
-        nickname_b = self._get_nickname(event, target_id)
+        nickname_a = await self._get_nickname(event, user_id)
+        nickname_b = await self._get_nickname(event, target_id)
 
-        interact = self.analyzer.get_interact_detail(scope, user_id, target_id)
-        cooccur_count = self.analyzer.get_cooccur_count(scope, user_id, target_id)
-        rank = self._get_distance_rank(scope, user_id, target_id)
+        interact = await self.analyzer.get_interact_detail(scope, user_id, target_id)
+        cooccur_count = await self.analyzer.get_cooccur_count(scope, user_id, target_id)
+        rank = await self._get_distance_rank(scope, user_id, target_id)
         prefix = self._get_command_prefix()
 
-        radar_bytes = self.visualizer.render_intimacy(
+        radar_bytes = await self.visualizer.render_intimacy(
             nickname_a=nickname_a, nickname_b=nickname_b, dist=dist,
             dist_label=dist_label, scores=scores, interact=interact,
             cooccur_count=cooccur_count, rank=rank, command_prefix=prefix,
@@ -209,23 +222,23 @@ class Commands:
             await event.reply("请在群聊中使用此命令")
             return
 
-        data = self.analyzer.compute_distance_matrix(scope)
+        data = await self.analyzer.compute_distance_matrix(scope)
         if not data:
             await self._reply_insufficient_data(event, scope)
             return
 
-        islands = self.analyzer.detect_islands(scope, data)
+        islands = await self.analyzer.detect_islands(scope, data)
         nicknames = {}
         for uid in data["users"]:
-            nicknames[uid] = self._get_nickname(event, uid)
+            nicknames[uid] = await self._get_nickname(event, uid)
 
-        island_names = self._generate_island_names(scope, islands, nicknames)
+        island_names = await self._generate_island_names(scope, islands, nicknames, event)
 
         msg_counts = {}
         for uid in data["users"]:
-            msg_counts[uid] = self.analyzer._get_presence(scope, uid)
+            msg_counts[uid] = await self.analyzer._get_presence(scope, uid)
 
-        global_total = sum(self.analyzer._get_global_count(u) for u in data["users"])
+        global_total = sum([await self.analyzer._get_global_count(u) for u in data["users"]])
         local_total = sum(msg_counts.values())
 
         drifters = [u for u in data["users"]
@@ -233,7 +246,7 @@ class Commands:
 
         prefix = self._get_command_prefix()
 
-        image_bytes = self.visualizer.render_sonar(
+        image_bytes = await self.visualizer.render_sonar(
             users=data["users"],
             matrix=data["matrix"],
             islands=islands,
@@ -256,25 +269,25 @@ class Commands:
         scope, _ = self._get_scope(event)
         user_id = event.get_user_id()
 
-        global_count = self.analyzer._get_global_count(user_id)
+        global_count = await self.analyzer._get_global_count(user_id)
         min_msg = self.analyzer._min_messages()
 
         if global_count < min_msg:
             await event.reply(f"你总共发送了 {global_count} 条消息，需要至少 {min_msg} 条才能生成画像")
             return
 
-        result = self.analyzer.find_parallel_universe(scope, user_id)
+        result = await self.analyzer.find_parallel_universe(scope, user_id)
         local = result.get("local") if result else None
         cross = result.get("cross_scope", []) if result else []
 
-        my_name = self._get_nickname(event, user_id)
+        my_name = await self._get_nickname(event, user_id)
 
         if local:
-            local["nickname"] = self._get_nickname(event, local["user_id"])
+            local["nickname"] = await self._get_nickname(event, local["user_id"])
 
         for item in cross:
             other_uid = item["user_id"]
-            other_info = self.sdk.storage.get(f"sonar:profile:{other_uid}:info", {})
+            other_info = await self.sdk.storage.aget(f"sonar:profile:{other_uid}:info", {})
             item["nickname"] = other_info.get("nickname", "") or other_uid
 
         prefix = self._get_command_prefix()
@@ -284,7 +297,7 @@ class Commands:
         else:
             templates = SonarTemplates.build_parallel(my_name, local, cross, None, prefix)
 
-        image_bytes = self.visualizer.render_parallel(
+        image_bytes = await self.visualizer.render_parallel(
             my_name=my_name, local=local, cross=cross, command_prefix=prefix,
         )
 
@@ -300,25 +313,25 @@ class Commands:
 
     async def _handle_radar_group(self, event, scope):
         user_id = event.get_user_id()
-        global_count = self.analyzer._get_global_count(user_id)
+        global_count = await self.analyzer._get_global_count(user_id)
         min_msg = self.analyzer._min_messages()
 
         if global_count < min_msg:
             await event.reply(f"你总共发送了 {global_count} 条消息，需要至少 {min_msg} 条才能生成画像")
             return
 
-        distances = self.analyzer.get_user_distances(scope, user_id)
+        distances = await self.analyzer.get_user_distances(scope, user_id)
 
         if not distances:
-            presence = self.analyzer._get_presence(scope, user_id)
-            all_scope_users = self.analyzer._get_users(scope)
-            eligible = self.analyzer._eligible_users(scope)
+            presence = await self.analyzer._get_presence(scope, user_id)
+            all_scope_users = await self.analyzer._get_users(scope)
+            eligible = await self.analyzer._eligible_users(scope)
             if len(eligible) < 2:
                 info_lines = []
                 for uid in all_scope_users:
-                    g = self.analyzer._get_global_count(uid)
-                    p = self.analyzer._get_presence(scope, uid)
-                    name = self._get_nickname(event, uid)
+                    g = await self.analyzer._get_global_count(uid)
+                    p = await self.analyzer._get_presence(scope, uid)
+                    name = await self._get_nickname(event, uid)
                     mark = "✓" if g >= min_msg else "✗"
                     info_lines.append(f"  {mark} {name}: 全局{g}条, 本群{p}条")
                 details = "\n".join(info_lines[:10])
@@ -329,10 +342,10 @@ class Commands:
 
         nicknames = {}
         for uid in distances:
-            nicknames[uid] = self._get_nickname(event, uid)
-        nicknames[user_id] = self._get_nickname(event, user_id)
+            nicknames[uid] = await self._get_nickname(event, uid)
+        nicknames[user_id] = await self._get_nickname(event, user_id)
 
-        presence = self.analyzer._get_presence(scope, user_id)
+        presence = await self.analyzer._get_presence(scope, user_id)
 
         rings = {"inner": [], "middle": [], "outer": [], "dark": []}
         for uid, info in distances.items():
@@ -347,10 +360,10 @@ class Commands:
             else:
                 rings["dark"].append((name, d))
 
-        detail = self.analyzer.get_user_detail(scope, user_id)
+        detail = await self.analyzer.get_user_detail(scope, user_id)
         tags = self._generate_tags(detail) if detail else ""
 
-        image_bytes = self.visualizer.render_personal_radar(
+        image_bytes = await self.visualizer.render_personal_radar(
             user_id=user_id, distances=distances, nicknames=nicknames,
             global_count=global_count, presence=presence,
             command_prefix=self._get_command_prefix(),
@@ -363,23 +376,23 @@ class Commands:
 
     async def _handle_radar_private(self, event):
         user_id = event.get_user_id()
-        global_count = self.analyzer._get_global_count(user_id)
+        global_count = await self.analyzer._get_global_count(user_id)
         min_msg = self.analyzer._min_messages()
 
         if global_count < min_msg:
             await event.reply(f"你总共发送了 {global_count} 条消息，需要至少 {min_msg} 条才能生成画像")
             return
 
-        detail = self.analyzer.get_user_detail(user_id)
-        groups = self.analyzer.get_user_groups(user_id)
+        detail = await self.analyzer.get_user_detail(user_id)
+        groups = await self.analyzer.get_user_groups(user_id)
 
-        nickname = self._get_nickname(event, user_id)
+        nickname = await self._get_nickname(event, user_id)
 
         group_tuples = []
         if groups:
             real_groups = [g for g in groups if not g.split(":")[-1].startswith("dm_")]
             for g_scope in real_groups:
-                presence = self.analyzer._get_presence(g_scope, user_id)
+                presence = await self.analyzer._get_presence(g_scope, user_id)
                 scope_parts = g_scope.split(":")
                 platform = scope_parts[1] if len(scope_parts) > 1 else "?"
                 gid = scope_parts[2] if len(scope_parts) > 2 else "?"
@@ -403,7 +416,7 @@ class Commands:
 
         top_emoji = detail.get("top_emoji", []) if detail else []
 
-        image_bytes = self.visualizer.render_profile(
+        image_bytes = await self.visualizer.render_profile(
             nickname=nickname, global_count=global_count, groups=group_tuples,
             tags=tags, peak_period=peak_period, top_emoji=top_emoji,
         )
@@ -425,7 +438,7 @@ class Commands:
             )
             reply = await event.wait_reply(timeout=30)
             if reply and reply.get_text().strip() == "确认":
-                self.collector.delete_user_data(scope, user_id)
+                await self.collector.delete_user_data(scope, user_id)
                 await event.reply(
                     "已完成:\n"
                     "- 已删除本群互动记录\n"
@@ -444,7 +457,7 @@ class Commands:
             )
             reply = await event.wait_reply(timeout=30)
             if reply and reply.get_text().strip() == "确认":
-                self.collector.delete_global_data(user_id)
+                await self.collector.delete_global_data(user_id)
                 await event.reply(
                     "已完成:\n"
                     "- 已删除全部特征记录\n"
@@ -460,7 +473,7 @@ class Commands:
         user_id = event.get_user_id()
 
         if scope:
-            self.collector.rejoin_user(scope, user_id)
+            await self.collector.rejoin_user(scope, user_id)
             await event.reply(
                 "已重新加入本群声呐监测\n"
                 "发几条消息后就能看到你的位置了"
@@ -472,14 +485,14 @@ class Commands:
             )
 
     async def _reply_insufficient_data(self, event, scope):
-        users = self.analyzer._get_users(scope)
+        users = await self.analyzer._get_users(scope)
         min_msg = self.analyzer._min_messages()
-        eligible = self.analyzer._eligible_users(scope)
+        eligible = await self.analyzer._eligible_users(scope)
         info_lines = []
         for uid in users:
-            g = self.analyzer._get_global_count(uid)
-            p = self.analyzer._get_presence(scope, uid)
-            name = self._get_nickname(event, uid)
+            g = await self.analyzer._get_global_count(uid)
+            p = await self.analyzer._get_presence(scope, uid)
+            name = await self._get_nickname(event, uid)
             mark = "✓" if g >= min_msg else "✗"
             info_lines.append((g, p, f"  {mark} {name}: 全局{g}条, 本群{p}条"))
         info_lines.sort(key=lambda x: x[0], reverse=True)
@@ -489,11 +502,17 @@ class Commands:
         text += f"\n（达标用户: {len(eligible)}/{len(users)}）\n\n{details}"
         await event.reply(text)
 
-    def storage_get_optout(self, scope):
-        return self.sdk.storage.get(f"{scope}:optout", [])
+    async def storage_get_optout(self, scope):
+        """
+        返回指定 scope 的退订用户列表。
 
-    def _get_distance_rank(self, scope, uid_a, uid_b):
-        data = self.analyzer.compute_distance_matrix(scope)
+        :param scope: 数据范围标识
+        :return: list[str] 用户 ID 列表
+        """
+        return await self.sdk.storage.aget(f"{scope}:optout", [])
+
+    async def _get_distance_rank(self, scope, uid_a, uid_b):
+        data = await self.analyzer.compute_distance_matrix(scope)
         if not data:
             return None
 
@@ -514,14 +533,14 @@ class Commands:
                 return rank
         return None
 
-    def _generate_island_names(self, scope, islands, nicknames):
+    async def _generate_island_names(self, scope, islands, nicknames, event):
         all_uids = set()
         for island in islands:
             all_uids.update(island["members"])
 
         details_cache = {}
         for uid in all_uids:
-            details_cache[uid] = self.analyzer.get_user_detail(scope, uid)
+            details_cache[uid] = await self.analyzer.get_user_detail(scope, uid)
 
         names = []
         for island in islands:

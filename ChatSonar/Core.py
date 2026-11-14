@@ -1,3 +1,8 @@
+"""
+模块入口
+
+装配采集器/分析器/渲染器/命令处理器，注册消息监听与 HTTP 路由，加载默认配置。
+"""
 from ErisPulse.Core.Bases import BaseModule
 from ErisPulse import sdk
 
@@ -87,7 +92,7 @@ class Main(BaseModule):
             return Response(content=html, media_type="text/html")
 
         async def get_scopes(request: Request):
-            scopes = self.collector.get_all_scopes()
+            scopes = await self.collector.get_all_scopes()
             return {"scopes": list(scopes)}
 
         async def get_data(request: Request):
@@ -96,7 +101,7 @@ class Main(BaseModule):
                 return {"error": "scope parameter required"}
             if not scope.startswith("sonar:"):
                 scope = f"sonar:{scope}"
-            data = self.analyzer.compute_distance_matrix(scope)
+            data = await self.analyzer.compute_distance_matrix(scope)
             if not data:
                 return {"error": "no data"}
             return {
@@ -111,10 +116,10 @@ class Main(BaseModule):
                 return {"error": "scope parameter required"}
             if not scope.startswith("sonar:"):
                 scope = f"sonar:{scope}"
-            data = self.analyzer.compute_distance_matrix(scope)
+            data = await self.analyzer.compute_distance_matrix(scope)
             if not data:
                 return {"error": "no data"}
-            islands = self.analyzer.detect_islands(scope, data)
+            islands = await self.analyzer.detect_islands(scope, data)
             return {"islands": islands}
 
         self.sdk.router.register_http_route(
@@ -152,6 +157,7 @@ class Main(BaseModule):
                 "top_vocab_count": 100,
                 "cache_enabled": True,
                 "cooccur_window": 300,
+                "moe_background": True,
                 "radar_distance_scale": 1.2,
                 "radar_max_radius": 1.1,
                 "weights": {
