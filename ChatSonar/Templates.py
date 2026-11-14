@@ -4,19 +4,19 @@ from typing import Dict, List, Optional
 class SonarTemplates:
     """文本回退模板（html / markdown / text）。"""
 
-    PRIMARY_COLOR = "#6366f1"
-    ACCENT_COLOR = "#8b5cf6"
-    WARNING_COLOR = "#ec4899"
-    ERROR_COLOR = "#f43f5e"
+    PRIMARY_COLOR = "#5e8dd6"
+    ACCENT_COLOR = "#5e8dd6"
+    WARNING_COLOR = "#5e8dd6"
+    ERROR_COLOR = "#d45656"
     SECONDARY_COLOR = "#64748b"
-    DARK_BG = "#f1f5f9"
+    DARK_BG = "#f4f7fc"
     CARD_BG = "#ffffff"
 
     RING_COLORS = {
-        "inner": "#6366f1",
-        "middle": "#8b5cf6",
-        "outer": "#ec4899",
-        "dark": "#94a3b8",
+        "inner": "#6f9de2",
+        "middle": "#8fb3ec",
+        "outer": "#b3cdf4",
+        "dark": "#d3e2fa",
     }
 
     RING_LABELS = {
@@ -39,7 +39,7 @@ class SonarTemplates:
         pct = int(value * 100)
         return (
             f'<div style="display:inline-block;width:{width}px;height:10px;'
-            f'background:rgba(99,102,241,0.12);border-radius:999px;vertical-align:middle;overflow:hidden;">'
+            f'background:rgba(127,168,232,0.12);border-radius:999px;vertical-align:middle;overflow:hidden;">'
             f'<div style="width:{pct}%;height:100%;background:linear-gradient(90deg,{color},'
             f'rgba(255,255,255,0.4));border-radius:999px;"></div>'
             f'</div>'
@@ -59,7 +59,7 @@ class SonarTemplates:
         return (
             f'<details style="margin-bottom:8px;">'
             f'<summary style="cursor:pointer;font-size:13px;padding:8px 14px;'
-            f'background:rgba(99,102,241,0.07);border-radius:999px;list-style:none;">'
+            f'background:rgba(127,168,232,0.10);border-radius:999px;list-style:none;">'
             f'<span style="color:{color};font-weight:bold;">{label}</span>'
             f' <span style="color:{cls.SECONDARY_COLOR};font-size:11px;">{range_desc}</span>'
             f' <span style="font-size:12px;">({count}人)</span>'
@@ -80,7 +80,7 @@ class SonarTemplates:
     @classmethod
     def _build_radar_group_html(cls, global_count, presence, rings, tags) -> str:
         stats_html = (
-            f'<div style="padding:9px 16px;background:rgba(99,102,241,0.07);'
+            f'<div style="padding:9px 16px;background:rgba(127,168,232,0.10);'
             f'border-radius:999px;margin-bottom:12px;font-size:12px;display:inline-block;">'
             f'全局消息: <b>{global_count}</b> 条 | 本群消息: <b>{presence}</b> 条'
             f'</div>'
@@ -182,7 +182,7 @@ class SonarTemplates:
     def _summary_chip(cls, color: str, title: str, meta: str) -> str:
         return (
             f'<summary style="cursor:pointer;font-size:13px;padding:8px 14px;'
-            f'background:rgba(99,102,241,0.07);border-radius:999px;list-style:none;">'
+            f'background:rgba(127,168,232,0.10);border-radius:999px;list-style:none;">'
             f'<b style="color:{color};">{title}</b> · {meta}</summary>'
         )
 
@@ -225,7 +225,7 @@ class SonarTemplates:
             f'color:#1f2937;">'
             f'<div style="color:{cls.PRIMARY_COLOR};font-size:16px;font-weight:bold;margin-bottom:12px;">'
             f'声呐扫描完成</div>'
-            f'<div style="padding:9px 16px;background:rgba(99,102,241,0.07);'
+            f'<div style="padding:9px 16px;background:rgba(127,168,232,0.10);'
             f'border-radius:999px;margin-bottom:12px;font-size:12px;display:inline-block;">{stats}</div>'
             f'{islands_html}{lone_html}'
             f'<div style="margin-top:10px;font-size:11px;color:{cls.SECONDARY_COLOR};">'
@@ -476,7 +476,7 @@ class SonarTemplates:
                 if details:
                     details_line = f'<div style="font-size:11px;color:{cls.SECONDARY_COLOR};margin-top:3px;">匹配项: {", ".join(details)}</div>'
                 items_html += (
-                    f'<div style="margin-bottom:8px;padding:10px 14px;background:rgba(139,92,246,0.07);'
+                    f'<div style="margin-bottom:8px;padding:10px 14px;background:rgba(127,168,232,0.10);'
                     f'border-radius:16px;">'
                     f'<div style="font-size:12px;">'
                     f'<span style="color:{cls.ACCENT_COLOR};font-weight:600;">[{platform_name}]</span> '
@@ -645,7 +645,7 @@ class SonarTemplates:
             f'color:#1f2937;">'
             f'<div style="color:{cls.PRIMARY_COLOR};font-size:16px;font-weight:bold;margin-bottom:12px;">'
             f'{nickname} 的全局档案</div>'
-            f'<div style="padding:9px 16px;background:rgba(99,102,241,0.07);'
+            f'<div style="padding:9px 16px;background:rgba(127,168,232,0.10);'
             f'border-radius:999px;margin-bottom:12px;font-size:12px;display:inline-block;">'
             f'消息统计: 共 <b>{global_count}</b> 条</div>'
             f'{groups_html}{tags_html}{period_html}{emoji_html}'

@@ -1,23 +1,27 @@
+"""
+声呐可视化渲染器
+
+Takumi HTML -> 图片。整张萌图铺底 + 白纱罩染为一体背景，
+卡片为白色半透明面板（深色文字）；关系图以 SVG 绘制：
+圈子凸包、弧形连接线、扫描光楔、雷达填充。
+"""
 import asyncio
 import html
 import math
 import re
 import time
 
-INDIGO = "#6366f1"
-VIOLET = "#8b5cf6"
-BLOSSOM = "#ec4899"
-MINT = "#10b981"
-AMBER = "#f59e0b"
-SLATE = "#94a3b8"
-INK = "#1f2937"
-MUTED = "#64748b"
+# 透感浅色 Design Tokens
+ACCENT = "#7fa8e8"       # 唯一强调色（奶蓝）：数据点、条形、徽章底
+ACCENT_TEXT = "#5e8dd6"  # 文字强调：关键数字与链接（奶蓝加深一档）
+INK = "#1f2937"          # 主文字
+MUTED = "#64748b"        # 次级文字
+SLATE = "#94a3b8"        # 结构件（连接线、环）
+SOFT_LINE = "#e2e8f0"    # 分隔线、虚线环
 
-SONAR_COLORS = [
-    INDIGO, VIOLET, BLOSSOM, MINT, AMBER,
-    "#38bdf8", "#fb7185", "#a78bfa",
-]
-RING_COLORS = {"inner": INDIGO, "middle": VIOLET, "outer": BLOSSOM, "dark": SLATE}
+# 距离层级：奶蓝亮度阶梯（近 -> 远）
+DIST_LADDER = ["#6f9de2", "#8fb3ec", "#b3cdf4", "#d3e2fa"]
+RING_COLORS = {"inner": "#6f9de2", "middle": "#8fb3ec", "outer": "#b3cdf4", "dark": "#d3e2fa"}
 
 _MASCOT_APIS = [
     "https://www.loliapi.com/acg/",
@@ -30,8 +34,9 @@ _MASCOT_TTL = 600.0  # 萌图缓存时长（秒）
 class Visualizer:
     """声呐可视化渲染器（Takumi HTML -> 图片）。
 
-    萌图整页铺底（多源拉取）+ 透白卡片；无萌图时使用渐变光斑背景。
-    关系图以 SVG 绘制：圈子凸包、弧形连接线、扫描光楔、雷达填充。
+    萌图整页铺底（多源拉取）+ 白纱罩染为一体背景，卡片为白色半透明面板；
+    无萌图时使用雾灰底 + 柔光斑。关系图以 SVG 绘制：
+    圈子凸包、弧形连接线、扫描光楔、雷达填充。
     """
 
     CARD_WIDTH = 920
@@ -55,7 +60,7 @@ class Visualizer:
     )
 
     _FONT_SANS = (
-        '"DM Sans", "Inter", "Noto Sans SC", "Source Han Sans SC", '
+        '"Inter", "DM Sans", "Noto Sans SC", "Source Han Sans SC", '
         '"PingFang SC", "Microsoft YaHei", sans-serif'
     )
     _FONT_MONO = '"JetBrains Mono", "Source Code Pro", Consolas, monospace'
@@ -63,122 +68,125 @@ class Visualizer:
     _CSS_TPL = """
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body { font-family: __FONTSANS__; color: __INK__; -webkit-font-smoothing: antialiased; }
-    .page { position: relative; background: __PAGE__; padding: __PAGEPAD__px; overflow: hidden; }
-    /* ---- 萌图背景层（有图时注入）---- */
-    .bg-media { position: absolute; left: 0; top: 0; right: 0; bottom: 0; border-radius: 28px; overflow: hidden; }
+    .page { position: relative; background: __PAGE__; overflow: hidden; }
+    /* ---- 一体背景层（通铺到页面边缘）---- */
+    .bg-media { position: absolute; left: 0; top: 0; right: 0; bottom: 0; overflow: hidden; }
     .bg-media img { position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: cover; object-position: center top; }
-    .bg-wash { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: __WASH__; }
-    /* ---- 渐变光斑背景（无图时注入）---- */
+    .bg-wash { position: absolute; left: 0; top: 0; right: 0; bottom: 0; background: rgba(255,255,255,__WASHALPHA__); }
+    /* ---- 光斑背景（无图时注入）---- */
     .glow { position: absolute; border-radius: 999px; }
-    .glow-a { width: 460px; height: 460px; top: -140px; right: -100px;
-        background: radial-gradient(closest-side, rgba(99,102,241,0.18), transparent); }
-    .glow-b { width: 520px; height: 520px; bottom: -180px; left: -140px;
-        background: radial-gradient(closest-side, rgba(236,72,153,0.12), transparent); }
-    .glow-c { width: 380px; height: 380px; top: 34%; left: 30%;
-        background: radial-gradient(closest-side, rgba(16,185,129,0.08), transparent); }
-    .page-content { position: relative; }
-    /* ---- 玻璃卡片 ---- */
+    .glow-a { width: 560px; height: 560px; top: -160px; right: -120px;
+        background: radial-gradient(closest-side, rgba(127,168,232,0.16), transparent); }
+    .glow-b { width: 500px; height: 500px; bottom: -180px; left: -140px;
+        background: radial-gradient(closest-side, rgba(148,163,184,0.18), transparent); }
+    .page-content { position: relative; padding: __PAGEPAD__px; }
+    /* ---- 白色半透明面板 ---- */
     .card {
-        background: __CARD__; border-radius: 24px; padding: 26px 30px;
-        margin-bottom: 20px; box-shadow: __CARDSHADOW__;
+        background: rgba(255,255,255,__CARDFILL__);
+        border-radius: 24px; padding: 28px 30px;
+        margin-bottom: 20px;
+        box-shadow: 0 8px 24px rgba(31,59,85,0.08);
     }
     .last { margin-bottom: 0; }
     .head-row { display: flex; align-items: center; gap: 16px; }
     .logo-chip {
         flex: 0 0 auto; width: 56px; height: 56px; border-radius: 999px;
-        background: rgba(99,102,241,0.12); display: flex; align-items: center; justify-content: center;
+        background: rgba(127,168,232,0.12); display: flex; align-items: center; justify-content: center;
     }
     .head-text { min-width: 0; }
-    .title { font-size: 27px; font-weight: 700; color: __INK__; letter-spacing: -0.5px; }
-    .subtitle { font-size: 14px; color: __MUTED__; margin-top: 3px; }
-    .divider { height: 2px; margin: 18px 0;
-        background: linear-gradient(90deg, transparent, __SEP__, transparent); }
-    /* ---- 玻璃胶囊 chips ---- */
+    .title { font-size: 26px; font-weight: 600; color: __INK__; letter-spacing: -0.01em; }
+    .subtitle { font-size: 13px; color: __MUTED__; margin-top: 3px; letter-spacing: 0.02em; }
+    .divider { height: 1px; margin: 18px 0;
+        background: linear-gradient(90deg, transparent, __SOFTLINE__, transparent); }
+    /* ---- 数字胶囊 ---- */
     .chips { display: flex; flex-wrap: wrap; gap: 10px; }
     .chip {
-        padding: 8px 18px; border-radius: 999px; font-size: 13px;
-        background: __SOFT__; color: __INK__;
+        padding: 8px 16px; border-radius: 16px; font-size: 12px;
+        background: rgba(255,255,255,0.55); color: __MUTED__;
     }
-    .chip b { font-weight: 700; margin-right: 5px; color: __INDIGO__; font-variant-numeric: tabular-nums; }
-    .chip.violet b { color: __VIOLET__; }
-    .chip.pink b { color: __BLOSSOM__; }
-    .chip.green b { color: __MINT__; }
-    /* ---- 区块标签：小波浪 SVG 点缀，无竖条 ---- */
+    .chip b { font-weight: 600; margin-right: 6px; color: __ACCENTTEXT__; font-size: 14px; font-variant-numeric: tabular-nums; }
+    /* ---- 区块标签 ---- */
     .section-label {
         display: flex; align-items: center; gap: 9px;
-        font-size: 12.5px; font-weight: 600; color: __MUTED__;
-        letter-spacing: 0.8px; margin: 4px 0 14px;
+        font-size: 12px; font-weight: 600; color: __MUTED__;
+        letter-spacing: 0.12em; margin: 4px 0 14px;
     }
     .section-label svg { flex: 0 0 auto; }
-    /* ---- 社交圈卡：低透明度色底 + 玻璃块 ---- */
+    /* ---- 列表卡 ---- */
     .island-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-    .island { border-radius: 20px; padding: 16px 18px; }
-    .island .name { font-size: 15px; font-weight: 600; color: __INK__; }
+    .island { border-radius: 16px; padding: 14px 16px; background: rgba(255,255,255,0.55); }
+    .island .name { font-size: 14px; font-weight: 600; color: __INK__; }
     .island .meta { font-size: 12px; color: __MUTED__; margin-top: 5px; }
     .island .members { font-size: 12.5px; color: __INK__; margin-top: 7px; line-height: 1.7; opacity: 0.75; }
-    .lone { border-radius: 20px; padding: 16px 18px; background: __SOFT__; font-size: 13px; color: __MUTED__; line-height: 1.8; }
+    .lone { border-radius: 16px; padding: 14px 16px; background: rgba(255,255,255,0.55); font-size: 13px; color: __MUTED__; line-height: 1.8; }
     .lone b { color: __INK__; }
-    .foot { font-size: 12.5px; color: __MUTED__; text-align: center; margin-top: 16px; line-height: 1.7; }
-    .foot code { color: __INDIGO__; background: __SOFT__; padding: 3px 10px; border-radius: 999px; font-family: __FONTMONO__; }
-    /* ---- 亲密度：头像对 + 距离徽章 ---- */
+    .foot { font-size: 12.5px; color: __MUTED__; text-align: center; margin-top: 16px; line-height: 1.7;
+        text-shadow: 0 1px 6px rgba(255,255,255,0.8); }
+    .foot code { color: __ACCENTTEXT__; background: rgba(255,255,255,0.6); padding: 3px 10px; border-radius: 999px; font-family: __FONTMONO__; }
+    /* ---- 亲密度：名字对 + 距离徽章 ---- */
     .pair-row { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
     .pair-names { display: flex; align-items: center; gap: 10px; font-size: 21px; font-weight: 600; color: __INK__; min-width: 0; flex-wrap: wrap; }
-    .dist-badge { flex: 0 0 auto; text-align: center; padding: 10px 20px; border-radius: 18px; }
-    .dist-badge .v { font-size: 27px; font-weight: 700; color: var(--dc, __INDIGO__); font-variant-numeric: tabular-nums; }
+    .dist-badge { flex: 0 0 auto; text-align: center; padding: 10px 20px; border-radius: 16px;
+        background: rgba(127,168,232,0.12); }
+    .dist-badge .v { font-size: 26px; font-weight: 600; color: __ACCENTTEXT__; font-variant-numeric: tabular-nums; }
     .dist-badge .l { font-size: 12px; color: __MUTED__; margin-top: 2px; }
     .radar-wrap { display: flex; justify-content: center; }
-    /* ---- 五维条 ---- */
+    /* ---- 维度条 ---- */
     .dim-grid { display: flex; flex-direction: column; gap: 14px; }
     .dim { display: flex; align-items: center; gap: 12px; }
     .dim .nm { width: 100px; font-size: 13.5px; color: __INK__; }
-    .bar { flex: 1; height: 10px; border-radius: 999px; background: __SEP__; overflow: hidden; }
-    .bar > i { display: block; height: 100%; border-radius: 999px;
-        background: linear-gradient(90deg, var(--c, __INDIGO__), rgba(255,255,255,0.40)); }
+    .bar { flex: 1; height: 8px; border-radius: 999px; background: __SOFTLINE__; overflow: hidden; }
+    .bar > i { display: block; height: 100%; border-radius: 999px; background: __ACCENT__; }
     .dim .pct { width: 46px; text-align: right; font-size: 13.5px; font-weight: 600; color: __INK__; font-variant-numeric: tabular-nums; }
     /* ---- 信息 pill 与标签 ---- */
     .kv { display: flex; gap: 10px; flex-wrap: wrap; }
-    .pill { padding: 8px 15px; border-radius: 999px; font-size: 13px; background: __SOFT__; color: __INK__; }
-    .pill b { color: __INDIGO__; font-weight: 600; }
+    .pill { padding: 8px 15px; border-radius: 999px; font-size: 13px; background: rgba(255,255,255,0.55); color: __INK__; }
+    .pill b { color: __ACCENTTEXT__; font-weight: 600; }
     .tags { display: flex; flex-wrap: wrap; gap: 8px; }
-    .tag { padding: 5px 14px; border-radius: 999px; font-size: 13px; color: __BLOSSOM__; background: rgba(236,72,153,0.10); }
+    .tag { padding: 5px 14px; border-radius: 999px; font-size: 13px; color: __ACCENTTEXT__; background: rgba(127,168,232,0.12); }
     .note { font-size: 13px; color: __MUTED__; }
-    .note b { color: __INDIGO__; }
-    .empty { font-size: 15px; color: __MUTED__; text-align: center; padding: 44px 20px; border-radius: 20px; background: __SOFT__; }
-    /* ---- 地图标签（玻璃小药丸）---- */
+    .note b { color: __ACCENTTEXT__; font-weight: 600; }
+    .empty { font-size: 15px; color: __MUTED__; text-align: center; padding: 44px 20px; border-radius: 16px; background: rgba(255,255,255,0.55); }
+    /* ---- 地图标签（白玻璃药丸）---- */
     .stage { position: relative; }
     .stage > svg { position: absolute; left: 0; top: 0; }
     .map-wrap { display: flex; justify-content: center; }
     .map-row { display: flex; gap: 16px; align-items: flex-start; }
     .rail { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
-    .rail .island { padding: 13px 15px; }
     .rail .section-label { margin: 0 0 2px; }
     .lbl {
         position: absolute; transform: translate(-50%, -50%);
-        background: __LBLBG__; padding: 3px 11px; border-radius: 999px;
-        font-size: 12px; font-weight: 600; white-space: nowrap;
-        color: var(--lc, __INDIGO__); box-shadow: __LBLSHADOW__; line-height: 1.4;
+        background: rgba(255,255,255,0.88); padding: 3px 11px; border-radius: 999px;
+        font-size: 12px; font-weight: 500; white-space: nowrap;
+        color: __INK__; box-shadow: 0 2px 8px rgba(31,59,85,0.10); line-height: 1.4;
     }
     .ring-tag {
         position: absolute; transform: translate(-50%, -50%);
-        font-size: 11px; color: __MUTED__; background: __LBLBG__;
+        font-size: 11px; color: __MUTED__; background: rgba(255,255,255,0.75);
         padding: 1px 8px; border-radius: 999px;
     }
     /* ---- 头像 chip 与镜像对 ---- */
     .avatar-chip {
         flex: 0 0 auto; width: 64px; height: 64px; border-radius: 999px;
-        background: rgba(99,102,241,0.10); border: 2px dashed rgba(99,102,241,0.30);
+        background: rgba(127,168,232,0.12);
         display: flex; align-items: center; justify-content: center;
-        font-size: 24px; font-weight: 700; color: var(--ac, #6366f1);
+        font-size: 24px; font-weight: 600; color: __ACCENTTEXT__;
     }
     .mirror { display: flex; align-items: center; gap: 14px; padding: 10px 2px 20px; }
-    .m-line { flex: 1; border-top: 2px dashed rgba(148,163,184,0.45); }
+    .m-line { flex: 1; border-top: 1px solid __SOFTLINE__; }
+    .sim-badge {
+        flex: 0 0 auto; padding: 8px 20px; border-radius: 999px;
+        background: __ACCENT__; color: #ffffff;
+        font-weight: 600; font-size: 16px; font-variant-numeric: tabular-nums;
+        box-shadow: 0 8px 20px rgba(127,168,232,0.35);
+    }
     /* ---- 跨群匹配行 ---- */
-    .cross-row { border-radius: 18px; padding: 14px 16px; background: __SOFT__; }
+    .cross-row { border-radius: 16px; padding: 14px 16px; background: rgba(255,255,255,0.55); }
     .cross-row .name-row { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; }
-    .cross-row .plat { font-size: 11.5px; font-weight: 600; color: __VIOLET__;
-        background: rgba(139,92,246,0.10); padding: 3px 10px; border-radius: 999px; }
+    .cross-row .plat { font-size: 11.5px; font-weight: 500; color: __ACCENTTEXT__;
+        background: rgba(127,168,232,0.12); padding: 3px 10px; border-radius: 999px; }
     .cross-row .name { font-size: 14px; font-weight: 600; color: __INK__; }
-    .cross-row .sim { font-size: 14px; font-weight: 700; color: __INDIGO__; font-variant-numeric: tabular-nums; }
+    .cross-row .sim { font-size: 14px; font-weight: 600; color: __ACCENTTEXT__; font-variant-numeric: tabular-nums; }
     .cross-row .meta { font-size: 11.5px; color: __MUTED__; margin-top: 5px; }
     """
 
@@ -325,29 +333,12 @@ class Visualizer:
 
     # ------------------------------------------------------------------ 主题与渲染
     def _theme(self):
-        mode = self.config.get("theme", "auto")
-        if mode == "auto":
-            offset = self.config.get("utc_offset", 8)
-            hour = int((time.time() / 3600 + offset) % 24)
-            mode = "dark" if (hour >= 19 or hour < 7) else "light"
-        if mode == "dark":
-            return {
-                "mode": "dark",
-                "page": "#14161d", "card": "rgba(32,36,46,0.80)",
-                "wash": "rgba(15,17,23,0.72)",
-                "ink": "#eef2f7", "muted": "#9aa5b5",
-                "sep": "rgba(148,163,184,0.18)", "soft": "rgba(148,163,184,0.10)",
-                "cardshadow": "0 12px 32px rgba(0,0,0,0.35)",
-                "lblbg": "rgba(32,36,46,0.92)", "lblshadow": "0 4px 14px rgba(0,0,0,0.35)",
-            }
+        """返回浅色透感主题色板；纱罩与卡片参数可由配置覆盖。"""
         return {
-            "mode": "light",
-            "page": "#f1f5f9", "card": "rgba(255,255,255,0.84)",
-            "wash": "rgba(255,255,255,0.72)",
-            "ink": INK, "muted": MUTED,
-            "sep": "rgba(148,163,184,0.25)", "soft": "rgba(99,102,241,0.07)",
-            "cardshadow": "0 12px 32px rgba(148,163,184,0.28)",
-            "lblbg": "rgba(255,255,255,0.90)", "lblshadow": "0 4px 14px rgba(148,163,184,0.35)",
+            "page": "#eef2f8",
+            "ink": INK,
+            "wash_alpha": self.config.get("wash_alpha", 0.45),
+            "card_fill": self.config.get("card_fill", 0.72),
         }
 
     def _css(self):
@@ -356,14 +347,14 @@ class Visualizer:
                .replace("__FONTSANS__", self._FONT_SANS)
                .replace("__FONTMONO__", self._FONT_MONO)
                .replace("__PAGEPAD__", str(self._PAGE_PAD))
-               .replace("__PAGE__", t["page"]).replace("__CARD__", t["card"])
-               .replace("__WASH__", t["wash"])
-               .replace("__INK__", t["ink"]).replace("__MUTED__", t["muted"])
-               .replace("__SEP__", t["sep"]).replace("__SOFT__", t["soft"])
-               .replace("__CARDSHADOW__", t["cardshadow"])
-               .replace("__LBLBG__", t["lblbg"]).replace("__LBLSHADOW__", t["lblshadow"])
-               .replace("__INDIGO__", INDIGO).replace("__VIOLET__", VIOLET)
-               .replace("__BLOSSOM__", BLOSSOM).replace("__MINT__", MINT))
+               .replace("__PAGE__", t["page"])
+               .replace("__WASHALPHA__", str(t["wash_alpha"]))
+               .replace("__CARDFILL__", str(t["card_fill"]))
+               .replace("__INK__", t["ink"])
+               .replace("__MUTED__", MUTED)
+               .replace("__ACCENT__", ACCENT)
+               .replace("__ACCENTTEXT__", ACCENT_TEXT)
+               .replace("__SOFTLINE__", SOFT_LINE))
         return css, t
 
     async def _render(self, body_html):
@@ -374,14 +365,13 @@ class Visualizer:
         await self._ensure_mascot()
         css, t = self._css()
 
-        layers = ""
         if self._moe_enabled() and self._mascot_data is not None:
-            # 萌图背景层与纱罩层
+            # 萌图铺底 + 白纱罩染
             layers = ("<div class='bg-media'><img src='memory://mascot'/>"
                       "<div class='bg-wash'></div></div>")
         else:
-            # 无萌图时使用渐变光斑层
-            layers = "<div class='glow glow-a'></div><div class='glow glow-b'></div><div class='glow glow-c'></div>"
+            # 无萌图时使用柔光斑层
+            layers = "<div class='glow glow-a'></div><div class='glow glow-b'></div>"
         body_html = f"<div class='page'>{layers}<div class='page-content'>{body_html}</div></div>"
 
         self._schedule_refresh()
@@ -401,24 +391,23 @@ class Visualizer:
     # ------------------------------------------------------------------ 通用部件
     @staticmethod
     def _dist_color(d):
+        """距离 -> 蓝色亮度阶梯。"""
         if d < 0.3:
-            return INDIGO
+            return DIST_LADDER[0]
         if d < 0.6:
-            return VIOLET
+            return DIST_LADDER[1]
         if d < 0.8:
-            return BLOSSOM
-        return SLATE
+            return DIST_LADDER[2]
+        return DIST_LADDER[3]
 
     def _head(self, title, subtitle):
         icon = (
             f"<svg width='30' height='30' viewBox='0 0 30 30' xmlns='http://www.w3.org/2000/svg'>"
-            f"<circle cx='15' cy='15' r='3.2' fill='{INDIGO}'/>"
-            f"<circle cx='15' cy='15' r='8.5' fill='none' stroke='{INDIGO}' stroke-opacity='0.5' "
-            f"stroke-width='2' stroke-dasharray='3.5 4.5' stroke-linecap='round'/>"
-            f"<circle cx='15' cy='15' r='13.5' fill='none' stroke='{BLOSSOM}' stroke-opacity='0.55' "
-            f"stroke-width='2' stroke-dasharray='2 5.5' stroke-linecap='round'/>"
-            f"<circle cx='15' cy='15' r='2' fill='{BLOSSOM}' fill-opacity='0.7' "
-            f"transform='translate(9.5,-9.5)'/>"
+            f"<circle cx='15' cy='15' r='3' fill='{ACCENT}'/>"
+            f"<circle cx='15' cy='15' r='8.5' fill='none' stroke='{ACCENT}' stroke-opacity='0.45' "
+            f"stroke-width='1.8' stroke-dasharray='3.5 4.5' stroke-linecap='round'/>"
+            f"<circle cx='15' cy='15' r='13.5' fill='none' stroke='{SLATE}' stroke-opacity='0.5' "
+            f"stroke-width='1.8' stroke-dasharray='2 5.5' stroke-linecap='round'/>"
             f"</svg>"
         )
         return (f"<div class='head-row'><div class='logo-chip'>{icon}</div>"
@@ -429,8 +418,8 @@ class Visualizer:
     def _section_label(text):
         wave = (
             "<svg width='34' height='10' viewBox='0 0 34 10' xmlns='http://www.w3.org/2000/svg'>"
-            f"<path d='M1 5 Q 5 1, 9 5 T 17 5 T 25 5 T 33 5' fill='none' stroke='{INDIGO}' "
-            "stroke-opacity='0.45' stroke-width='2' stroke-linecap='round'/>"
+            f"<path d='M1 5 Q 5 1, 9 5 T 17 5 T 25 5 T 33 5' fill='none' stroke='{ACCENT}' "
+            "stroke-opacity='0.45' stroke-width='1.8' stroke-linecap='round'/>"
             "</svg>"
         )
         return f"<div class='section-label'>{wave}<span>{text}</span></div>"
@@ -471,9 +460,9 @@ class Visualizer:
         return out
 
     @staticmethod
-    def _label_div(cx, cy, text, color):
-        return (f"<div class='lbl' style='left:{cx:.1f}px;top:{cy:.1f}px;"
-                f"--lc:{color};color:{color}'>{text}</div>")
+    def _label_div(cx, cy, text, color=None):
+        color_style = f"color:{color};" if color else ""
+        return (f"<div class='lbl' style='left:{cx:.1f}px;top:{cy:.1f}px;{color_style}'>{text}</div>")
 
     @staticmethod
     def _ring_tag(cx, cy, text):
@@ -527,21 +516,21 @@ class Visualizer:
 
     @staticmethod
     def _defs_sonar(t):
-        """声呐图共享的渐变与光楔定义。"""
+        """声呐图共享渐变定义。"""
         return (
             "<defs>"
             f"<radialGradient id='sonarGlow' cx='50%' cy='50%' r='50%'>"
-            f"<stop offset='0%' stop-color='{INDIGO}' stop-opacity='0.10'/>"
-            f"<stop offset='70%' stop-color='{INDIGO}' stop-opacity='0.03'/>"
-            f"<stop offset='100%' stop-color='{INDIGO}' stop-opacity='0'/>"
+            f"<stop offset='0%' stop-color='{ACCENT}' stop-opacity='0.07'/>"
+            f"<stop offset='70%' stop-color='{ACCENT}' stop-opacity='0.02'/>"
+            f"<stop offset='100%' stop-color='{ACCENT}' stop-opacity='0'/>"
             "</radialGradient>"
             f"<linearGradient id='sweep' x1='0%' y1='0%' x2='100%' y2='0%'>"
-            f"<stop offset='0%' stop-color='{INDIGO}' stop-opacity='0.20'/>"
-            f"<stop offset='100%' stop-color='{INDIGO}' stop-opacity='0'/>"
+            f"<stop offset='0%' stop-color='{ACCENT}' stop-opacity='0.10'/>"
+            f"<stop offset='100%' stop-color='{ACCENT}' stop-opacity='0'/>"
             "</linearGradient>"
             f"<linearGradient id='pairFill' x1='0%' y1='0%' x2='100%' y2='100%'>"
-            f"<stop offset='0%' stop-color='{INDIGO}' stop-opacity='0.40'/>"
-            f"<stop offset='100%' stop-color='{BLOSSOM}' stop-opacity='0.22'/>"
+            f"<stop offset='0%' stop-color='{ACCENT}' stop-opacity='0.22'/>"
+            f"<stop offset='100%' stop-color='{ACCENT}' stop-opacity='0.06'/>"
             "</linearGradient>"
             "</defs>"
         )
@@ -610,21 +599,17 @@ class Visualizer:
 
     # ------------------------------------------------------------------ sonar svg
     def _svg_sonar(self, users, matrix, islands, msg_counts, node_px, t):
-        """关系图 SVG：软光底 + 扫描光楔 + 圈子凸包软色块 + 弧形连接 + 光晕节点。"""
+        """关系图 SVG：底光 + 扫描光楔 + 圈子凸包 + 弧形连接 + 节点。"""
         island_map = {}
         for idx, island in enumerate(islands):
-            color = SONAR_COLORS[idx % len(SONAR_COLORS)]
             for uid in island["members"]:
-                island_map[uid] = (idx, color)
-        default_color = SLATE
+                island_map[uid] = idx
         threshold = self.config.get("distance_threshold", 0.6)
         max_count = max(max(msg_counts.values()) if msg_counts else 1, 1)
         size = self.MAP_SVG
         cxy = size / 2
         radius = size / 2 - 64
-        sep = t["sep"]
-        node_stroke = "#ffffff" if t["mode"] == "light" else "#20242e"
-        edge_index = 0
+        node_stroke = "#ffffff"
 
         svg = [f"<svg width='{size}' height='{size}' viewBox='0 0 {size} {size}' xmlns='http://www.w3.org/2000/svg'>"]
         svg.append(self._defs_sonar(t))
@@ -638,34 +623,33 @@ class Visualizer:
                    f"A{r_sweep:.1f} {r_sweep:.1f} 0 0 1 {p1[0]:.1f} {p1[1]:.1f} Z' "
                    f"fill='url(#sweep)'/>")
         # 距离环（虚线）
-        for r_frac, op in ((0.3, 0.9), (0.6, 0.65), (0.9, 0.4)):
+        for r_frac in (0.3, 0.6, 0.9):
             svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='{radius * r_frac:.1f}' fill='none' "
-                       f"stroke='{sep}' stroke-opacity='{op}' stroke-width='1.4' stroke-dasharray='5 7'/>")
+                       f"stroke='{SOFT_LINE}' stroke-width='1.2' stroke-dasharray='5 7'/>")
         # 中心十字准星
-        svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='4' fill='{INDIGO}'/>")
+        svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='3.5' fill='{ACCENT}'/>")
         for dx_a, dy_a in ((1, 0), (-1, 0), (0, 1), (0, -1)):
             svg.append(f"<line x1='{cxy + 8 * dx_a:.1f}' y1='{cxy + 8 * dy_a:.1f}' "
                        f"x2='{cxy + 15 * dx_a:.1f}' y2='{cxy + 15 * dy_a:.1f}' "
-                       f"stroke='{INDIGO}' stroke-opacity='0.45' stroke-width='1.6' stroke-linecap='round'/>")
+                       f"stroke='{ACCENT}' stroke-opacity='0.4' stroke-width='1.4' stroke-linecap='round'/>")
 
-        # 社交圈软色凸包（>=3 人）或双人气囊（=2 人）
-        for idx, island in enumerate(islands):
+        # 社交圈凸包（>=3 人）或双人气囊（=2 人）
+        for island in islands:
             members = [m for m in island["members"] if m in node_px]
             if len(members) < 2:
                 continue
-            color = SONAR_COLORS[idx % len(SONAR_COLORS)]
             if len(members) >= 3:
                 hull = self._expand_hull(self._convex_hull([node_px[m] for m in members]), 30)
                 pts = " ".join(f"{x:.1f},{y:.1f}" for x, y in hull)
-                svg.append(f"<polygon points='{pts}' fill='{color}' fill-opacity='0.08' "
-                           f"stroke='{color}' stroke-opacity='0.32' stroke-width='1.6' "
+                svg.append(f"<polygon points='{pts}' fill='{ACCENT}' fill-opacity='0.05' "
+                           f"stroke='{SLATE}' stroke-opacity='0.5' stroke-width='1.3' "
                            f"stroke-dasharray='7 7' stroke-linejoin='round'/>")
             else:
                 (x1, y1), (x2, y2) = node_px[members[0]], node_px[members[1]]
                 svg.append(f"<line x1='{x1:.1f}' y1='{y1:.1f}' x2='{x2:.1f}' y2='{y2:.1f}' "
-                           f"stroke='{color}' stroke-opacity='0.10' stroke-width='58' stroke-linecap='round'/>")
+                           f"stroke='{SLATE}' stroke-opacity='0.15' stroke-width='52' stroke-linecap='round'/>")
 
-        # 弧形连接线：同圈用圈色，跨圈用灰色
+        # 弧形连接线
         for i in range(len(users)):
             for j in range(i + 1, len(users)):
                 dist = matrix.get(f"{users[i]}|{users[j]}", 1.0)
@@ -673,28 +657,24 @@ class Visualizer:
                     continue
                 x1, y1 = node_px[users[i]]
                 x2, y2 = node_px[users[j]]
-                alpha = max(0.16, min(0.65, (1.0 - dist) * 0.85))
-                ic1 = island_map.get(users[i], (0, default_color))[1]
-                ic2 = island_map.get(users[j], (0, default_color))[1]
-                lc = ic1 if ic1 == ic2 else SLATE
-                edge_index += 1
+                alpha = max(0.18, min(0.7, (1.0 - dist) * 0.85))
+                edge_index = i + j
                 curve = min(26, math.hypot(x2 - x1, y2 - y1) * 0.12) * (1 if edge_index % 2 else -1)
                 path = self._edge_path(x1, y1, x2, y2, curve)
                 if dist < 0.3:  # dist < 0.3 时加宽描边衬底
-                    svg.append(f"<path d='{path}' fill='none' stroke='{lc}' stroke-opacity='0.14' stroke-width='7' stroke-linecap='round'/>")
-                svg.append(f"<path d='{path}' fill='none' stroke='{lc}' stroke-opacity='{alpha:.2f}' "
-                           f"stroke-width='1.8' stroke-linecap='round'/>")
+                    svg.append(f"<path d='{path}' fill='none' stroke='{ACCENT}' stroke-opacity='0.10' stroke-width='7' stroke-linecap='round'/>")
+                svg.append(f"<path d='{path}' fill='none' stroke='{SLATE}' stroke-opacity='{alpha:.2f}' "
+                           f"stroke-width='1.6' stroke-linecap='round'/>")
 
         # 节点：光晕、主体、高光点
         for uid in users:
             x, y = node_px[uid]
-            color = island_map.get(uid, (0, default_color))[1]
             r_node = 8 + (msg_counts.get(uid, 1) / max_count) * 14
-            svg.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{r_node + 9:.1f}' fill='{color}' fill-opacity='0.18'/>")
-            svg.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{r_node:.1f}' fill='{color}' "
-                       f"stroke='{node_stroke}' stroke-width='2.5'/>")
+            svg.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{r_node + 9:.1f}' fill='{ACCENT}' fill-opacity='0.10'/>")
+            svg.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{r_node:.1f}' fill='{ACCENT}' "
+                       f"stroke='{node_stroke}' stroke-width='2'/>")
             svg.append(f"<circle cx='{x - r_node * 0.3:.1f}' cy='{y - r_node * 0.3:.1f}' "
-                       f"r='{max(1.6, r_node * 0.24):.1f}' fill='#ffffff' fill-opacity='0.75'/>")
+                       f"r='{max(1.6, r_node * 0.24):.1f}' fill='#ffffff' fill-opacity='0.7'/>")
         svg.append("</svg>")
         return "".join(svg), island_map, cxy, radius
 
@@ -716,12 +696,11 @@ class Visualizer:
         node_px = {uid: (cxy + coords[uid][0] * radius, cxy + coords[uid][1] * radius) for uid in users}
 
         svg_shapes, island_map, _, _ = self._svg_sonar(users, matrix, islands, msg_counts, node_px, t)
-        default_color = SLATE
         label_of = {uid: self._strip_emoji(nicknames.get(uid, uid)) for uid in users}
         ordered = sorted(users, key=lambda u: msg_counts.get(u, 0), reverse=True)
         labels = self._place_labels(ordered, node_px, label_of, max_labels=24)
         label_html = "".join(
-            self._label_div(cx, cy, self._esc(txt), island_map.get(uid, (0, default_color))[1])
+            self._label_div(cx, cy, self._esc(txt))
             for uid, (cx, cy, txt) in labels.items())
         ring_tags = (self._ring_tag(cxy + radius * 0.3, cxy, "0.3")
                      + self._ring_tag(cxy + radius * 0.6, cxy, "0.6")
@@ -734,9 +713,9 @@ class Visualizer:
 
         chips = (f"<div class='chips'>"
                  f"<div class='chip'><b>{len(users)}</b>成员</div>"
-                 f"<div class='chip violet'><b>{len(islands)}</b>社交圈</div>"
-                 f"<div class='chip green'><b>{edge_count}</b>连接</div>"
-                 f"<div class='chip pink'><b>{len(drifters)}</b>独立</div></div>")
+                 f"<div class='chip'><b>{len(islands)}</b>社交圈</div>"
+                 f"<div class='chip'><b>{edge_count}</b>连接</div>"
+                 f"<div class='chip'><b>{len(drifters)}</b>独立</div></div>")
 
         real_islands = [(island_names[i] if i < len(island_names) else f"社交圈 {i + 1}", isl)
                         for i, isl in enumerate(islands) if isl.get("size", 0) >= 2]
@@ -745,14 +724,13 @@ class Visualizer:
             if isl.get("size", 0) < 2:
                 lone.extend(isl["members"])
 
-        # 右侧栏：圈子与独立用户（卡片按圈色着色）
+        # 右侧栏：圈子与独立用户
         rail_items = []
         island_items = []
         for i, (name, isl) in enumerate(real_islands):
-            color = SONAR_COLORS[i % len(SONAR_COLORS)]
             members_str = self._esc("、".join(self._strip_emoji(nicknames.get(m, m)) for m in isl["members"][:14]))
             island_items.append(
-                f"<div class='island' style='background:{self._rgba(color, 0.08)}'>"
+                f"<div class='island'>"
                 f"<div class='name'>{self._esc(name)}</div>"
                 f"<div class='meta'>{isl['size']} 人 · 平均距离 {isl['avg_distance']}</div>"
                 f"<div class='members'>{members_str}</div></div>")
@@ -786,7 +764,6 @@ class Visualizer:
         dims = ["timing", "emoji", "vocab", "interaction", "cooccurrence"]
         labels = ["时段重叠", "表情相似", "词汇相似", "直接互动", "共现频率"]
         values = [max(0.0, min(1.0, float(scores.get(d, 0)))) for d in dims]
-        dist_color = self._dist_color(dist)
         _, t = self._css()
 
         size = self.RADAR_SVG
@@ -794,57 +771,54 @@ class Visualizer:
         R = 142
         n = 5
         angles = [math.radians(-90 + i * 360 / n) for i in range(n)]
-        sep = t["sep"]
         svg = [f"<svg width='{size}' height='{size}' viewBox='0 0 {size} {size}' xmlns='http://www.w3.org/2000/svg'>"]
         svg.append(self._defs_sonar(t))
-        # 网格：最外圈淡靛蓝填充 + 虚线环
+        # 网格：最外圈淡填充 + 虚线环
         for idx, frac in enumerate((0.25, 0.5, 0.75, 1.0)):
             pts = " ".join(f"{c + R * frac * math.cos(a):.1f},{c + R * frac * math.sin(a):.1f}" for a in angles)
-            fill = f" fill='{INDIGO}' fill-opacity='0.03'" if idx == 3 else ""
-            dash = "" if idx == 3 else " stroke-dasharray='4 6'"
-            svg.append(f"<polygon points='{pts}' fill='none' stroke='{sep}' stroke-width='1.2'{dash}{fill}/>"
-                       if not fill else
-                       f"<polygon points='{pts}'{fill} stroke='{sep}' stroke-width='1.2'/>")
+            if idx == 3:
+                svg.append(f"<polygon points='{pts}' fill='{ACCENT}' fill-opacity='0.04' "
+                           f"stroke='{SOFT_LINE}' stroke-width='1.2'/>")
+            else:
+                svg.append(f"<polygon points='{pts}' fill='none' stroke='{SOFT_LINE}' "
+                           f"stroke-width='1' stroke-dasharray='4 6'/>")
         for a in angles:
             svg.append(f"<line x1='{c}' y1='{c}' x2='{c + R * math.cos(a):.1f}' y2='{c + R * math.sin(a):.1f}' "
-                       f"stroke='{sep}' stroke-width='1' stroke-dasharray='4 6'/>")
-        # 数据多边形：靛蓝→樱花渐变填充，顶点光晕
+                       f"stroke='{SOFT_LINE}' stroke-width='1' stroke-dasharray='4 6'/>")
+        # 数据多边形
         data_pts = " ".join(f"{c + R * v * math.cos(a):.1f},{c + R * v * math.sin(a):.1f}" for a, v in zip(angles, values))
-        svg.append(f"<polygon points='{data_pts}' fill='url(#pairFill)' stroke='{INDIGO}' stroke-width='2.2' stroke-linejoin='round'/>")
+        svg.append(f"<polygon points='{data_pts}' fill='url(#pairFill)' stroke='{ACCENT}' "
+                   f"stroke-width='2' stroke-linejoin='round'/>")
         for a, v in zip(angles, values):
             vx, vy = c + R * v * math.cos(a), c + R * v * math.sin(a)
-            svg.append(f"<circle cx='{vx:.1f}' cy='{vy:.1f}' r='10' fill='{INDIGO}' fill-opacity='0.18'/>")
-            svg.append(f"<circle cx='{vx:.1f}' cy='{vy:.1f}' r='4.5' fill='{INDIGO}' stroke='#ffffff' stroke-width='1.8'/>")
+            svg.append(f"<circle cx='{vx:.1f}' cy='{vy:.1f}' r='9' fill='{ACCENT}' fill-opacity='0.15'/>")
+            svg.append(f"<circle cx='{vx:.1f}' cy='{vy:.1f}' r='4' fill='{ACCENT}' stroke='#ffffff' stroke-width='1.5'/>")
         svg.append("</svg>")
         overlays = ""
         for a, v, lab in zip(angles, values, labels):
             vx, vy = c + R * v * math.cos(a), c + R * v * math.sin(a)
-            overlays += self._label_div(vx, vy - 16, f"{int(v * 100)}%", INDIGO)
-            overlays += self._label_div(c + (R + 30) * math.cos(a), c + (R + 30) * math.sin(a), self._esc(lab), t["ink"])
+            overlays += self._label_div(vx, vy - 16, f"{int(v * 100)}%", ACCENT)
+            overlays += self._label_div(c + (R + 30) * math.cos(a), c + (R + 30) * math.sin(a), self._esc(lab))
         stage = f"<div class='stage' style='width:{size}px;height:{size}px'>{ ''.join(svg)}{overlays}</div>"
 
         dim_rows = []
         for label, val in zip(labels, values):
-            dc = self._dist_color(val)
             dim_rows.append(
-                f"<div class='dim' style='--c:{dc}'><div class='nm'>{label}</div>"
+                f"<div class='dim'><div class='nm'>{label}</div>"
                 f"<div class='bar'><i style='width:{val*100:.1f}%'></i></div>"
                 f"<div class='pct'>{val*100:.0f}%</div></div>")
 
-        # 头像对 + 心形连接（颜色随距离）
+        # 名字对 + 心形连接
         heart = (
-            f"<svg width='26' height='24' viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'>"
+            f"<svg width='24' height='22' viewBox='0 0 24 24' xmlns='http://www.w3.org/2000/svg'>"
             f"<path d='M12 21s-7.5-4.6-10-9.3C.6 8.9 2.3 5 6 5c2.2 0 3.7 1.2 4.6 2.5L12 9l1.4-1.5C14.3 6.2 15.8 5 18 5"
-            f"c3.7 0 5.4 3.9 4 6.7C19.5 16.4 12 21 12 21z' fill='{dist_color}' fill-opacity='0.9'/>"
-            f"<circle cx='5' cy='7' r='1.4' fill='{dist_color}' fill-opacity='0.4'/>"
-            f"<circle cx='19.5' cy='6.2' r='1' fill='{dist_color}' fill-opacity='0.35'/></svg>"
+            f"c3.7 0 5.4 3.9 4 6.7C19.5 16.4 12 21 12 21z' fill='{ACCENT}' fill-opacity='0.85'/></svg>"
         )
-        pair = (f"<div class='pair-row' style='--dc:{dist_color}'>"
+        pair = (f"<div class='pair-row'>"
                 f"<div class='pair-names'><span class='n'>{self._esc(self._strip_emoji(nickname_a))}</span>"
                 f"{heart}"
                 f"<span class='n'>{self._esc(self._strip_emoji(nickname_b))}</span></div>"
-                f"<div class='dist-badge' style='background:{self._rgba(dist_color, 0.10)}'>"
-                f"<div class='v'>{dist:.2f}</div>"
+                f"<div class='dist-badge'><div class='v'>{dist:.2f}</div>"
                 f"<div class='l'>{self._esc(dist_label)}</div></div></div>")
 
         dim_extra = ""
@@ -884,14 +858,13 @@ class Visualizer:
         max_radius = self.config.get("radar_max_radius", 1.1)
         n = len(others)
         my_name = self._strip_emoji(nicknames.get(user_id, user_id))
-        sep = t["sep"]
         node_px = {}
         svg = [f"<svg width='{size}' height='{size}' viewBox='0 0 {size} {size}' xmlns='http://www.w3.org/2000/svg'>"]
         svg.append(self._defs_sonar(t))
         svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='{radius + 60}' fill='url(#sonarGlow)'/>")
-        for r_frac, op in ((0.3, 0.9), (0.6, 0.65), (0.9, 0.4)):
+        for r_frac in (0.3, 0.6, 0.9):
             svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='{radius * r_frac:.1f}' fill='none' "
-                       f"stroke='{sep}' stroke-opacity='{op}' stroke-width='1.4' stroke-dasharray='5 7'/>")
+                       f"stroke='{SOFT_LINE}' stroke-width='1.2' stroke-dasharray='5 7'/>")
         for i, uid in enumerate(others):
             dist = distances[uid]["distance"]
             ang = 2 * math.pi * i / n
@@ -901,23 +874,23 @@ class Visualizer:
             color = self._dist_color(dist)
             node_r = 6 + max(0.0, (1.0 - dist)) * 11
             svg.append(f"<line x1='{cxy}' y1='{cxy}' x2='{x:.1f}' y2='{y:.1f}' "
-                       f"stroke='{color}' stroke-opacity='0.30' stroke-width='1.2' stroke-dasharray='3 5'/>")
-            svg.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{node_r + 7:.1f}' fill='{color}' fill-opacity='0.16'/>")
+                       f"stroke='{color}' stroke-opacity='0.35' stroke-width='1.1' stroke-dasharray='3 5'/>")
+            svg.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{node_r + 7:.1f}' fill='{color}' fill-opacity='0.12'/>")
             svg.append(f"<circle cx='{x:.1f}' cy='{y:.1f}' r='{node_r:.1f}' fill='{color}' "
-                       f"stroke='#ffffff' stroke-width='2'/>")
+                       f"stroke='#ffffff' stroke-width='1.6'/>")
         # 中心「我」：三层光环
-        svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='26' fill='{INDIGO}' fill-opacity='0.08'/>")
-        svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='17' fill='{INDIGO}' fill-opacity='0.16'/>")
-        svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='10' fill='{INDIGO}' stroke='#ffffff' stroke-width='2.5'/>")
+        svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='26' fill='{ACCENT}' fill-opacity='0.08'/>")
+        svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='17' fill='{ACCENT}' fill-opacity='0.16'/>")
+        svg.append(f"<circle cx='{cxy}' cy='{cxy}' r='10' fill='{ACCENT}' stroke='#ffffff' stroke-width='2'/>")
         svg.append("</svg>")
         label_of = {uid: f"{self._strip_emoji(nicknames.get(uid, uid))} {distances[uid]['distance']:.2f}" for uid in others}
         labels = self._place_labels(others, node_px, label_of, max_labels=24, char_w=8)
         label_html = "".join(
-            self._label_div(cx, cy, self._esc(txt), self._dist_color(distances[uid]["distance"]))
+            self._label_div(cx, cy, self._esc(txt))
             for uid, (cx, cy, txt) in labels.items())
         ring_tags = "".join(self._ring_tag(cxy + radius * f, cxy, lab)
                             for f, lab in [(0.3, "内圈"), (0.6, "中圈"), (0.9, "外圈")])
-        me_tag = self._label_div(cxy, cxy + 30, self._esc(my_name[:10]), INDIGO)
+        me_tag = self._label_div(cxy, cxy + 30, self._esc(my_name[:10]), ACCENT)
         stage = f"<div class='stage' style='width:{size}px;height:{size}px'>{ ''.join(svg)}{ring_tags}{label_html}{me_tag}</div>"
 
         rings = {"inner": [], "middle": [], "outer": [], "dark": []}
@@ -931,17 +904,16 @@ class Visualizer:
             items = rings[key]
             if not items:
                 continue
-            color = RING_COLORS[key]
             names = self._esc("  ".join(f"{nm}({dd:.2f})" for nm, dd in items[:16]))
             ring_items.append(
-                f"<div class='island' style='background:{self._rgba(color, 0.08)}'>"
+                f"<div class='island'>"
                 f"<div class='name'>{lab} "
-                f"<span style='color:{t['muted']};font-size:12px;font-weight:400'> {rng} · {len(items)}人</span></div>"
+                f"<span style='color:{MUTED};font-size:12px;font-weight:400'> {rng} · {len(items)}人</span></div>"
                 f"<div class='members'>{names}</div></div>")
 
         chips = (f"<div class='chips'><div class='chip'><b>{global_count}</b>全局消息</div>"
-                 f"<div class='chip violet'><b>{presence}</b>本群消息</div>"
-                 f"<div class='chip pink'><b>{len(others)}</b>联系人</div></div>")
+                 f"<div class='chip'><b>{presence}</b>本群消息</div>"
+                 f"<div class='chip'><b>{len(others)}</b>联系人</div></div>")
 
         if ring_items:
             map_card = (f"<div class='map-row'><div class='map-col'>{stage}</div>"
@@ -964,11 +936,11 @@ class Visualizer:
         top_emoji = top_emoji or []
         name = self._strip_emoji(nickname)
         chips = (f"<div class='chips'><div class='chip'><b>{global_count}</b>消息</div>"
-                 f"<div class='chip violet'><b>{len(groups)}</b>活跃群</div></div>")
+                 f"<div class='chip'><b>{len(groups)}</b>活跃群</div></div>")
 
         # 头像 chip（昵称首字）+ 标题
         initial = self._esc(name[:1]) if name else "?"
-        avatar = f"<div class='avatar-chip' style='--ac:{INDIGO}'>{initial}</div>"
+        avatar = f"<div class='avatar-chip'>{initial}</div>"
         head = (f"<div class='head-row'>{avatar}"
                 f"<div class='head-text'><div class='title'>{self._esc(name)} 的全局档案</div>"
                 f"<div class='subtitle'>Global Profile</div></div></div>"
@@ -1005,22 +977,17 @@ class Visualizer:
             checks = ""
             for dim, label in [("timing", "活跃时段"), ("vocab", "消息风格"), ("emoji", "表情偏好")]:
                 val = local.get("scores", {}).get(dim, 0)
-                checks += (f"<div class='dim' style='--c:{INDIGO}'><div class='nm'>{label}</div>"
+                checks += (f"<div class='dim'><div class='nm'>{label}</div>"
                            f"<div class='bar'><i style='width:{val*100:.1f}%'></i></div>"
                            f"<div class='pct'>{val*100:.0f}%</div></div>")
-            # 镜像对：两枚头像 chip 由虚线连起，中点放相似度徽章
-            badge_bg = f"linear-gradient(90deg, {INDIGO}, {BLOSSOM})"
+            # 镜像对：两枚头像 chip 由细线连起，中点放相似度徽章
             mirror = (
                 f"<div class='mirror'>"
-                f"<div class='avatar-chip' style='--ac:{INDIGO}'>{self._esc(self._strip_emoji(my_name)[:1])}</div>"
+                f"<div class='avatar-chip'>{self._esc(self._strip_emoji(my_name)[:1])}</div>"
                 f"<div class='m-line'></div>"
-                f"<div style='flex:0 0 auto;padding:8px 20px;border-radius:999px;background:{badge_bg};"
-                f"color:#ffffff;font-weight:700;font-size:16px;"
-                f"box-shadow:0 8px 20px rgba(99,102,241,0.25)'>{sim}%</div>"
+                f"<div class='sim-badge'>{sim}%</div>"
                 f"<div class='m-line'></div>"
-                f"<div class='avatar-chip' style='--ac:{BLOSSOM};"
-                f"background:{self._rgba(BLOSSOM, 0.10)};border-color:{self._rgba(BLOSSOM, 0.30)};"
-                f"color:{BLOSSOM}'>{self._esc(tname[:1])}</div>"
+                f"<div class='avatar-chip'>{self._esc(tname[:1])}</div>"
                 f"</div>"
             )
             cards.append(
